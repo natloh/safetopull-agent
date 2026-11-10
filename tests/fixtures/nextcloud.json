@@ -1,0 +1,98 @@
+{
+  "schema_version": "1.0",
+  "app": {
+    "slug": "nextcloud",
+    "name": "Nextcloud",
+    "github": "nextcloud/server",
+    "updated_at": "2026-10-29T00:00:00Z"
+  },
+  "digest_map": {
+    "sha256:nextcloud28index": {
+      "version": "v28.0.0",
+      "variant": "official",
+      "arch": "index"
+    },
+    "sha256:nextcloud29index": {
+      "version": "v29.0.0",
+      "variant": "official",
+      "arch": "index"
+    },
+    "sha256:nextcloud30index": {
+      "version": "v30.0.0",
+      "variant": "official",
+      "arch": "index"
+    }
+  },
+  "releases": [
+    {
+      "version": "v28.0.0",
+      "semver": [28, 0, 0],
+      "published_at": "2024-01-10T12:00:00Z",
+      "is_breaking": false,
+      "database_migration": false,
+      "minimum_prior_version": null,
+      "required_cpu_flags": [],
+      "summary": "Nextcloud Hub 7 (28.0.0) release.",
+      "arch_readiness": {
+        "official": { "amd64": true, "arm64": true }
+      },
+      "rules": []
+    },
+    {
+      "version": "v29.0.0",
+      "semver": [29, 0, 0],
+      "published_at": "2024-04-24T12:00:00Z",
+      "is_breaking": true,
+      "database_migration": true,
+      "minimum_prior_version": "v28.0.0",
+      "required_cpu_flags": [],
+      "summary": "Nextcloud Hub 8 (29.0.0) sequential major release.",
+      "arch_readiness": {
+        "official": { "amd64": true, "arm64": true }
+      },
+      "rules": [
+        {
+          "rule_slug": "nextcloud-v29-stepping-stone",
+          "severity": "blocking",
+          "category": "stepping_stone",
+          "condition": {
+            "type": "always"
+          },
+          "action": {
+            "type": "require_stepping_stone",
+            "minimum_prior_version": "v28.0.0"
+          },
+          "explanation": "Nextcloud requires upgrading through major versions sequentially."
+        }
+      ]
+    },
+    {
+      "version": "v30.0.0",
+      "semver": [30, 0, 0],
+      "published_at": "2024-09-12T12:00:00Z",
+      "is_breaking": true,
+      "database_migration": true,
+      "minimum_prior_version": "v29.0.0",
+      "required_cpu_flags": [],
+      "summary": "Nextcloud Hub 9 (30.0.0) requires v29 before upgrading.",
+      "arch_readiness": {
+        "official": { "amd64": true, "arm64": true }
+      },
+      "rules": [
+        {
+          "rule_slug": "nextcloud-v30-stepping-stone",
+          "severity": "blocking",
+          "category": "stepping_stone",
+          "condition": {
+            "type": "always"
+          },
+          "action": {
+            "type": "require_stepping_stone",
+            "minimum_prior_version": "v29.0.0"
+          },
+          "explanation": "Cannot skip major version 29 when upgrading to 30."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "updated_at": "2026-10-29T00:00:00Z",
+  "apps": [
+    {
+      "slug": "immich",
+      "name": "Immich",
+      "images": [
+        {
+          "variant": "official",
+          "registry": "ghcr.io",
+          "repository": "immich-app/immich-server",
+          "rolling_tags": ["release"]
+        }
+      ]
+    },
+    {
+      "slug": "nextcloud",
+      "name": "Nextcloud",
+      "images": [
+        {
+          "variant": "official",
+          "registry": "registry-1.docker.io",
+          "repository": "library/nextcloud",
+          "rolling_tags": ["latest", "stable"]
+        }
+      ]
+    },
+    {
+      "slug": "traefik",
+      "name": "Traefik",
+      "images": [
+        {
+          "variant": "official",
+          "registry": "registry-1.docker.io",
+          "repository": "library/traefik",
+          "rolling_tags": ["latest"]
+        }
+      ]
+    }
+  ]
+}

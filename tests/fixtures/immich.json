@@ -1,0 +1,127 @@
+{
+  "schema_version": "1.0",
+  "app": {
+    "slug": "immich",
+    "name": "Immich",
+    "github": "immich-app/immich",
+    "updated_at": "2026-10-29T00:00:00Z"
+  },
+  "digest_map": {
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111": {
+      "version": "v1.132.0",
+      "variant": "official",
+      "arch": "index"
+    },
+    "sha256:2222222222222222222222222222222222222222222222222222222222222222": {
+      "version": "v2.0.0",
+      "variant": "official",
+      "arch": "amd64"
+    }
+  },
+  "releases": [
+    {
+      "version": "v1.128.0",
+      "semver": [1, 128, 0],
+      "published_at": "2026-03-10T12:00:00Z",
+      "is_breaking": false,
+      "database_migration": false,
+      "minimum_prior_version": null,
+      "required_cpu_flags": [],
+      "summary": "Initial stable baseline release.",
+      "arch_readiness": {
+        "official": { "amd64": true, "arm64": true }
+      },
+      "rules": []
+    },
+    {
+      "version": "v1.132.0",
+      "semver": [1, 132, 0],
+      "published_at": "2026-05-01T12:00:00Z",
+      "is_breaking": false,
+      "database_migration": false,
+      "minimum_prior_version": null,
+      "required_cpu_flags": [],
+      "summary": "Maintenance release with bug fixes.",
+      "arch_readiness": {
+        "official": { "amd64": true, "arm64": true }
+      },
+      "rules": []
+    },
+    {
+      "version": "v1.133.0",
+      "semver": [1, 133, 0],
+      "published_at": "2026-07-20T12:00:00Z",
+      "is_breaking": false,
+      "database_migration": false,
+      "minimum_prior_version": null,
+      "required_cpu_flags": [],
+      "summary": "Final v1 bridge release preparing for v2 upgrade.",
+      "arch_readiness": {
+        "official": { "amd64": true, "arm64": true }
+      },
+      "rules": []
+    },
+    {
+      "version": "v2.0.0",
+      "semver": [2, 0, 0],
+      "published_at": "2026-09-15T12:00:00Z",
+      "is_breaking": true,
+      "database_migration": true,
+      "minimum_prior_version": "v1.133.0",
+      "required_cpu_flags": ["avx2"],
+      "summary": "Migrates vector extension from pgvecto.rs to VectorChord and updates container upload target to /data.",
+      "arch_readiness": {
+        "official": { "amd64": true, "arm64": true }
+      },
+      "rules": [
+        {
+          "rule_slug": "immich-v2-vectorchord-swap",
+          "severity": "blocking",
+          "category": "companion_image_change",
+          "condition": {
+            "type": "companion_service_image_matches",
+            "service": "database",
+            "pattern": "*pgvecto-rs*"
+          },
+          "action": {
+            "type": "replace_companion_image",
+            "service": "database",
+            "from_image": "tensorchord/pgvecto-rs:pg14-v0.2.0",
+            "to_image": "ghcr.io/immich-app/postgres:16-vectorchord0.3.0"
+          },
+          "explanation": "Immich v2.0 replaces pgvecto-rs with VectorChord."
+        },
+        {
+          "rule_slug": "immich-v2-volume-target",
+          "severity": "blocking",
+          "category": "volume_path_change",
+          "condition": {
+            "type": "always"
+          },
+          "action": {
+            "type": "update_volume_target",
+            "service": "immich-server",
+            "from_target": "/usr/src/app/upload",
+            "to_target": "/data"
+          },
+          "explanation": "Container upload path moved from /usr/src/app/upload to /data."
+        },
+        {
+          "rule_slug": "immich-v2-env-postgres-host",
+          "severity": "warning",
+          "category": "env_var_renamed",
+          "condition": {
+            "type": "env_key_present",
+            "key": "DB_HOSTNAME"
+          },
+          "action": {
+            "type": "rename_env_key",
+            "from_key": "DB_HOSTNAME",
+            "to_key": "POSTGRES_HOST"
+          },
+          "explanation": "DB_HOSTNAME has been renamed to POSTGRES_HOST."
+        }
+      ]
+    }
+  ]
+}
