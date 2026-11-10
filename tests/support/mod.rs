@@ -53,17 +53,30 @@ impl FakeDataset {
     }
 
     pub async fn start(&self) -> String {
-        serve(Router::new().route("/{*path}", get(dataset_file)).with_state(self.clone())).await
+        serve(
+            Router::new()
+                .route("/{*path}", get(dataset_file))
+                .with_state(self.clone()),
+        )
+        .await
     }
 }
 
 fn etag_of(body: &str) -> String {
-    format!("\"{}-{}\"", body.len(), body.bytes().fold(0u64, |sum, byte| sum.wrapping_mul(31).wrapping_add(byte.into())))
+    format!(
+        "\"{}-{}\"",
+        body.len(),
+        body.bytes()
+            .fold(0u64, |sum, byte| sum.wrapping_mul(31).wrapping_add(byte.into()))
+    )
 }
 
 async fn dataset_file(State(dataset): State<FakeDataset>, Path(path): Path<String>, headers: HeaderMap) -> Response {
     let mut state = dataset.0.lock().unwrap();
-    let presented = headers.get(header::IF_NONE_MATCH).and_then(|value| value.to_str().ok()).map(str::to_owned);
+    let presented = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
     state.requests.push((path.clone(), presented.clone()));
 
     if state.failing {
@@ -196,7 +209,11 @@ async fn inspect_container(State(docker): State<FakeDocker>, Path(id): Path<Stri
     state.calls.push(format!("inspect {id}"));
     match state.inspections.get(&id) {
         Some(inspection) => Json(inspection.clone()).into_response(),
-        None => (StatusCode::NOT_FOUND, Json(json!({"message": format!("No such container: {id}")}))).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"message": format!("No such container: {id}")})),
+        )
+            .into_response(),
     }
 }
 
@@ -206,7 +223,11 @@ async fn inspect_image(State(docker): State<FakeDocker>, Path(reference): Path<S
     state.calls.push(format!("image {reference}"));
     match state.images.get(reference) {
         Some(image) => Json(image.clone()).into_response(),
-        None => (StatusCode::NOT_FOUND, Json(json!({"message": format!("No such image: {reference}")}))).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"message": format!("No such image: {reference}")})),
+        )
+            .into_response(),
     }
 }
 
@@ -242,7 +263,11 @@ async fn container_action(
     state.calls.push(format!("{action} {id}{detail}"));
 
     if action == "start" && state.failing_starts.contains(&id) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"message": "port is already allocated"}))).into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"message": "port is already allocated"})),
+        )
+            .into_response();
     }
     StatusCode::NO_CONTENT.into_response()
 }
@@ -250,4 +275,174 @@ async fn container_action(
 async fn remove_container(State(docker): State<FakeDocker>, Path(id): Path<String>) -> StatusCode {
     docker.0.lock().unwrap().calls.push(format!("remove {id}"));
     StatusCode::NO_CONTENT
+}
+
+pub const PAIRING_CODE: &str = "ABCDE-FGHJK";
+pub const HOST_TOKEN: &str = "stp_test_token";
+
+#[derive(Default)]
+pub struct CloudState {
+    pub reports: Vec<Value>,
+    pub pending: Vec<Value>,
+    pub results: Vec<(u64, Value)>,
+    pub revoked: bool,
+    pub unlinked: bool,
+}
+
+#[derive(Clone, Default)]
+pub struct FakeCloud(pub Arc<Mutex<CloudState>>);
+
+impl FakeCloud {
+    pub fn queue_update(&self, id: u64, service_key: &str, target_version: &str) {
+        self.0.lock().unwrap().pending.push(json!({
+            "id": id, "type": "update", "service_key": service_key, "target_version": target_version,
+        }));
+    }
+
+    pub fn revoke(&self) {
+        self.0.lock().unwrap().revoked = true;
+    }
+
+    pub fn reports(&self) -> Vec<Value> {
+        self.0.lock().unwrap().reports.clone()
+    }
+
+    pub fn results(&self) -> Vec<(u64, Value)> {
+        self.0.lock().unwrap().results.clone()
+    }
+
+    pub fn unlinked(&self) -> bool {
+        self.0.lock().unwrap().unlinked
+    }
+
+    pub async fn start(&self) -> String {
+        let router = Router::new()
+            .route("/api/agent/v1/pair", post(cloud_pair))
+            .route("/api/agent/v1/report", post(cloud_report))
+            .route("/api/agent/v1/commands/{id}/result", post(cloud_result))
+            .route("/api/agent/v1/link", delete(cloud_unlink))
+            .with_state(self.clone());
+
+        serve(router).await
+    }
+}
+
+fn linked(state: &CloudState, headers: &HeaderMap) -> bool {
+    let presented = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok());
+    !state.revoked && presented == Some(format!("Bearer {HOST_TOKEN}").as_str())
+}
+
+async fn cloud_pair(Json(body): Json<Value>) -> Response {
+    if body["code"] == PAIRING_CODE {
+        (
+            StatusCode::CREATED,
+            Json(json!({"host_id": 7, "name": body["name"], "token": HOST_TOKEN})),
+        )
+            .into_response()
+    } else {
+        let rejection = json!({"error": "invalid_code", "message": "This pairing code is invalid or has expired."});
+        (StatusCode::UNPROCESSABLE_ENTITY, Json(rejection)).into_response()
+    }
+}
+
+async fn cloud_report(State(cloud): State<FakeCloud>, headers: HeaderMap, Json(report): Json<Value>) -> Response {
+    let mut state = cloud.0.lock().unwrap();
+    if !linked(&state, &headers) {
+        return (StatusCode::UNAUTHORIZED, Json(json!({"message": "Unauthenticated."}))).into_response();
+    }
+    state.reports.push(report);
+    let commands = std::mem::take(&mut state.pending);
+    Json(json!({"commands": commands, "poll_after_seconds": 300})).into_response()
+}
+
+async fn cloud_result(
+    State(cloud): State<FakeCloud>,
+    Path(id): Path<u64>,
+    headers: HeaderMap,
+    Json(result): Json<Value>,
+) -> StatusCode {
+    let mut state = cloud.0.lock().unwrap();
+    if !linked(&state, &headers) {
+        return StatusCode::UNAUTHORIZED;
+    }
+    state.results.push((id, result));
+    StatusCode::NO_CONTENT
+}
+
+async fn cloud_unlink(State(cloud): State<FakeCloud>, headers: HeaderMap) -> StatusCode {
+    let mut state = cloud.0.lock().unwrap();
+    if !linked(&state, &headers) {
+        return StatusCode::UNAUTHORIZED;
+    }
+    state.unlinked = true;
+    StatusCode::NO_CONTENT
+}
+
+pub struct Lab {
+    pub dataset: FakeDataset,
+    pub docker: FakeDocker,
+    pub cloud: FakeCloud,
+    pub data: tempfile::TempDir,
+}
+
+impl Lab {
+    pub fn new() -> Self {
+        Self {
+            dataset: FakeDataset::with_fixtures(),
+            docker: FakeDocker::default(),
+            cloud: FakeCloud::default(),
+            data: tempfile::tempdir().unwrap(),
+        }
+    }
+
+    pub async fn app(&self, settings: &[(&str, &str)]) -> (Arc<stp_agent::app::App>, String) {
+        let cloud_url = self.cloud.start().await;
+        let mut environment = HashMap::from([
+            ("STP_DOCKER_HOST".to_owned(), self.docker.start().await),
+            ("STP_DATASET_URL".to_owned(), self.dataset.start().await),
+            ("STP_CLOUD_URL".to_owned(), cloud_url.clone()),
+            (
+                "STP_DATA_DIR".to_owned(),
+                self.data.path().to_string_lossy().into_owned(),
+            ),
+        ]);
+        environment.extend(
+            settings
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
+        );
+
+        let config = stp_agent::config::Config::from_lookup(|name| environment.get(name).cloned()).unwrap();
+        let host = stp_agent::host::HostFacts {
+            arch: "amd64".to_owned(),
+            cpu_flags: Some(["avx2".to_owned()].into()),
+        };
+        let app = stp_agent::app::App::start(config, host).await.unwrap();
+        app.scan().await;
+
+        (app, cloud_url)
+    }
+
+    pub fn run_nextcloud_29(&self) {
+        self.docker.run(FakeContainer {
+            id: "nc1",
+            name: "nextcloud",
+            image: "nextcloud:latest",
+            image_id: "sha256:nc29",
+            stack: Some("cloud"),
+            env: &[
+                "NEXTCLOUD_ADMIN_PASSWORD=hunter2",
+                "PATH=/usr/local/bin",
+                "IMMICH_BUILD=old",
+            ],
+            repo_digests: &["nextcloud@sha256:nextcloud29index"],
+        });
+    }
+
+    pub fn publish_nextcloud_latest(&self, digest: &str) {
+        self.docker.publish_image(
+            "docker.io/library/nextcloud:latest",
+            json!({"Id": "sha256:new", "RepoDigests": [format!("nextcloud@{digest}")], "Config": {}}),
+        );
+    }
 }

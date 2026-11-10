@@ -9,7 +9,8 @@ use stp_agent::scan::{Scanner, ServiceStatus, Snapshot};
 use stp_agent::triage::Verdict;
 use support::{FakeContainer, FakeDataset, FakeDocker};
 
-const IMMICH_V1_132: &str = "ghcr.io/immich-app/immich-server@sha256:1111111111111111111111111111111111111111111111111111111111111111";
+const IMMICH_V1_132: &str =
+    "ghcr.io/immich-app/immich-server@sha256:1111111111111111111111111111111111111111111111111111111111111111";
 
 struct Lab {
     dataset: FakeDataset,
@@ -36,7 +37,10 @@ impl Lab {
         let scanner = Scanner {
             docker: Docker::connect(&self.docker.start().await).unwrap(),
             catalog: self.catalog().await,
-            host: HostFacts { arch: "amd64".to_owned(), cpu_flags: Some(["avx2".to_owned()].into()) },
+            host: HostFacts {
+                arch: "amd64".to_owned(),
+                cpu_flags: Some(["avx2".to_owned()].into()),
+            },
             update_mode,
         };
         scanner.scan().await
@@ -63,7 +67,11 @@ fn only(snapshot: &Snapshot) -> &ServiceStatus {
 #[tokio::test]
 async fn identifies_the_running_version_by_digest_and_holds_back_a_breaking_update() {
     let lab = Lab::new();
-    lab.run_immich("ghcr.io/immich-app/immich-server:release", &[IMMICH_V1_132], &["DB_HOSTNAME=db", "DB_PASSWORD=hunter2"]);
+    lab.run_immich(
+        "ghcr.io/immich-app/immich-server:release",
+        &[IMMICH_V1_132],
+        &["DB_HOSTNAME=db", "DB_PASSWORD=hunter2"],
+    );
     lab.docker.run(FakeContainer {
         id: "db1",
         name: "database",
@@ -104,10 +112,24 @@ async fn applies_conditional_rules_using_companions_and_environment_names_from_t
 
     let snapshot = lab.scan(UpdateMode::Advisory).await;
     let immich = only(&snapshot);
-    let slugs: Vec<&str> = immich.assessment.as_ref().unwrap().findings.iter().map(|finding| finding.slug.as_str()).collect();
+    let slugs: Vec<&str> = immich
+        .assessment
+        .as_ref()
+        .unwrap()
+        .findings
+        .iter()
+        .map(|finding| finding.slug.as_str())
+        .collect();
 
     assert_eq!(immich.verdict, Verdict::Red);
-    assert_eq!(slugs, ["immich-v2-vectorchord-swap", "immich-v2-volume-target", "immich-v2-env-postgres-host"]);
+    assert_eq!(
+        slugs,
+        [
+            "immich-v2-vectorchord-swap",
+            "immich-v2-volume-target",
+            "immich-v2-env-postgres-host"
+        ]
+    );
     assert!(!immich.can_update);
 }
 
@@ -153,7 +175,11 @@ async fn reports_up_to_date_and_unrecognised_versions_without_guessing() {
     assert!(!only(&snapshot).can_update);
 
     let unknown = Lab::new();
-    unknown.run_immich("ghcr.io/immich-app/immich-server:release", &["ghcr.io/immich-app/immich-server@sha256:notindataset"], &[]);
+    unknown.run_immich(
+        "ghcr.io/immich-app/immich-server:release",
+        &["ghcr.io/immich-app/immich-server@sha256:notindataset"],
+        &[],
+    );
     let snapshot = unknown.scan(UpdateMode::Apply).await;
     assert_eq!(only(&snapshot).verdict, Verdict::Unknown);
     assert_eq!(only(&snapshot).current_version, None);
@@ -169,7 +195,11 @@ async fn fetches_only_the_index_and_the_manifests_of_apps_that_run() {
 
     let paths: Vec<String> = lab.dataset.requests().into_iter().map(|(path, _)| path).collect();
     assert_eq!(paths, ["v1/index.json", "v1/apps/immich.json"]);
-    assert!(lab.outbound.recent().iter().all(|record| record.method == "GET" && record.status == Some(200)));
+    assert!(lab
+        .outbound
+        .recent()
+        .iter()
+        .all(|record| record.method == "GET" && record.status == Some(200)));
 }
 
 #[tokio::test]
@@ -178,7 +208,10 @@ async fn a_docker_or_dataset_outage_is_reported_instead_of_showing_an_empty_heal
     let scanner = Scanner {
         docker: Docker::connect("tcp://127.0.0.1:9").unwrap(),
         catalog: no_docker.catalog().await,
-        host: HostFacts { arch: "amd64".to_owned(), cpu_flags: None },
+        host: HostFacts {
+            arch: "amd64".to_owned(),
+            cpu_flags: None,
+        },
         update_mode: UpdateMode::Advisory,
     };
     assert!(scanner.scan().await.docker_error.is_some());
@@ -193,8 +226,14 @@ async fn revalidates_with_etags_and_survives_an_unreachable_dataset_from_cache()
     let lab = Lab::new();
     let catalog = lab.catalog().await;
 
-    assert_eq!(catalog.manifest("immich").await.unwrap().freshness, Freshness::Downloaded);
-    assert_eq!(catalog.manifest("immich").await.unwrap().freshness, Freshness::Revalidated);
+    assert_eq!(
+        catalog.manifest("immich").await.unwrap().freshness,
+        Freshness::Downloaded
+    );
+    assert_eq!(
+        catalog.manifest("immich").await.unwrap().freshness,
+        Freshness::Revalidated
+    );
 
     let requests = lab.dataset.requests();
     assert_eq!(requests[0].1, None);
@@ -206,7 +245,8 @@ async fn revalidates_with_etags_and_survives_an_unreachable_dataset_from_cache()
     assert_eq!(offline.value.releases.len(), 4);
 
     lab.dataset.fail(false);
-    lab.dataset.put("v1/apps/immich.json", &support::fixture("nextcloud.json"));
+    lab.dataset
+        .put("v1/apps/immich.json", &support::fixture("nextcloud.json"));
     let changed = catalog.manifest("immich").await.unwrap();
     assert_eq!(changed.freshness, Freshness::Downloaded);
     assert_eq!(changed.value.releases.len(), 3);
@@ -219,11 +259,20 @@ async fn never_caches_a_malformed_file_and_rejects_slugs_that_could_escape_the_c
     catalog.manifest("immich").await.unwrap();
 
     lab.dataset.put("v1/apps/immich.json", "<html>captive portal</html>");
-    assert!(matches!(catalog.manifest("immich").await, Err(CatalogError::Malformed { .. })));
+    assert!(matches!(
+        catalog.manifest("immich").await,
+        Err(CatalogError::Malformed { .. })
+    ));
 
     lab.dataset.fail(true);
     assert_eq!(catalog.manifest("immich").await.unwrap().value.releases.len(), 4);
 
-    assert!(matches!(catalog.manifest("../../etc/passwd").await, Err(CatalogError::InvalidSlug(_))));
-    assert!(matches!(catalog.manifest("unknown-app").await, Err(CatalogError::Unavailable { .. })));
+    assert!(matches!(
+        catalog.manifest("../../etc/passwd").await,
+        Err(CatalogError::InvalidSlug(_))
+    ));
+    assert!(matches!(
+        catalog.manifest("unknown-app").await,
+        Err(CatalogError::Unavailable { .. })
+    ));
 }

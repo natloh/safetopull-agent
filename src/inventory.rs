@@ -34,12 +34,25 @@ impl ImageRef {
             _ => repository.to_owned(),
         };
 
-        Self { registry: registry.to_owned(), repository, tag, digest }
+        Self {
+            registry: registry.to_owned(),
+            repository,
+            tag,
+            digest,
+        }
     }
 
     /// The reference Docker pulls from, without tag or digest.
     pub fn pull_name(&self) -> String {
-        format!("{}/{}", if self.registry == DOCKER_HUB { "docker.io" } else { &self.registry }, self.repository)
+        format!(
+            "{}/{}",
+            if self.registry == DOCKER_HUB {
+                "docker.io"
+            } else {
+                &self.registry
+            },
+            self.repository
+        )
     }
 
     pub fn tag_or_latest(&self) -> &str {
@@ -70,8 +83,11 @@ pub fn running_services(containers: Vec<ContainerSummary>) -> Vec<RunningService
     containers
         .into_iter()
         .map(|container| {
-            let container_name =
-                container.names.first().map(|name| name.trim_start_matches('/').to_owned()).unwrap_or_else(|| container.id.clone());
+            let container_name = container
+                .names
+                .first()
+                .map(|name| name.trim_start_matches('/').to_owned())
+                .unwrap_or_else(|| container.id.clone());
             let stack = container.labels.get(PROJECT_LABEL).cloned();
             let name = container.labels.get(SERVICE_LABEL).cloned().unwrap_or(container_name);
             let key = match &stack {
@@ -128,13 +144,22 @@ mod tests {
     fn parses_the_reference_shapes_docker_accepts() {
         assert_eq!(parsed("postgres"), owned(DOCKER_HUB, "library/postgres", None));
         assert_eq!(parsed("postgres:16"), owned(DOCKER_HUB, "library/postgres", Some("16")));
-        assert_eq!(parsed("docker.io/traefik:v3.1"), owned(DOCKER_HUB, "library/traefik", Some("v3.1")));
-        assert_eq!(parsed("linuxserver/nextcloud:latest"), owned(DOCKER_HUB, "linuxserver/nextcloud", Some("latest")));
+        assert_eq!(
+            parsed("docker.io/traefik:v3.1"),
+            owned(DOCKER_HUB, "library/traefik", Some("v3.1"))
+        );
+        assert_eq!(
+            parsed("linuxserver/nextcloud:latest"),
+            owned(DOCKER_HUB, "linuxserver/nextcloud", Some("latest"))
+        );
         assert_eq!(
             parsed("ghcr.io/immich-app/immich-server:release"),
             owned("ghcr.io", "immich-app/immich-server", Some("release"))
         );
-        assert_eq!(parsed("localhost:5000/team/app"), owned("localhost:5000", "team/app", None));
+        assert_eq!(
+            parsed("localhost:5000/team/app"),
+            owned("localhost:5000", "team/app", None)
+        );
     }
 
     #[test]
@@ -170,15 +195,24 @@ mod tests {
 
     #[test]
     fn matches_images_to_tracked_apps_and_variants() {
-        assert_eq!(matched("ghcr.io/immich-app/immich-server:release"), Some(("immich".into(), "official".into())));
+        assert_eq!(
+            matched("ghcr.io/immich-app/immich-server:release"),
+            Some(("immich".into(), "official".into()))
+        );
         assert_eq!(matched("nextcloud:29"), Some(("nextcloud".into(), "official".into())));
-        assert_eq!(matched("lscr.io/linuxserver/nextcloud"), Some(("nextcloud".into(), "linuxserver".into())));
+        assert_eq!(
+            matched("lscr.io/linuxserver/nextcloud"),
+            Some(("nextcloud".into(), "linuxserver".into()))
+        );
         assert_eq!(matched("redis:7"), None);
     }
 
     #[test]
     fn a_mirror_matches_only_when_the_repository_is_unambiguous() {
-        assert_eq!(matched("mirror.lan/immich-app/immich-server:release"), Some(("immich".into(), "official".into())));
+        assert_eq!(
+            matched("mirror.lan/immich-app/immich-server:release"),
+            Some(("immich".into(), "official".into()))
+        );
         assert_eq!(matched("mirror.lan/library/nextcloud:29"), None);
     }
 }

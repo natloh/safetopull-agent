@@ -43,7 +43,11 @@ pub struct Catalog {
 
 impl Catalog {
     pub fn new(outbound: Outbound, base_url: &str, cache_dir: impl Into<PathBuf>) -> Self {
-        Self { outbound, base_url: base_url.trim_end_matches('/').to_owned(), cache_dir: cache_dir.into() }
+        Self {
+            outbound,
+            base_url: base_url.trim_end_matches('/').to_owned(),
+            cache_dir: cache_dir.into(),
+        }
     }
 
     pub async fn index(&self) -> Result<Fetched<AppIndex>, CatalogError> {
@@ -51,7 +55,10 @@ impl Catalog {
     }
 
     pub async fn manifest(&self, slug: &str) -> Result<Fetched<AppManifest>, CatalogError> {
-        let valid = !slug.is_empty() && slug.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+        let valid = !slug.is_empty()
+            && slug
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
 
         if !valid {
             return Err(CatalogError::InvalidSlug(slug.to_owned()));
@@ -81,8 +88,19 @@ impl Catalog {
                 None => return Err(unavailable(path, "HTTP 304 without a cached copy")),
             },
             Ok(response) if response.status().is_success() => {
-                downloaded_etag = response.headers().get(ETAG).and_then(|value| value.to_str().ok()).map(str::to_owned);
-                (response.bytes().await.map_err(|error| unavailable(path, error))?.to_vec(), Freshness::Downloaded)
+                downloaded_etag = response
+                    .headers()
+                    .get(ETAG)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned);
+                (
+                    response
+                        .bytes()
+                        .await
+                        .map_err(|error| unavailable(path, error))?
+                        .to_vec(),
+                    Freshness::Downloaded,
+                )
             }
             Ok(response) => match cached_body {
                 Some(body) => (body, Freshness::Stale),
@@ -94,8 +112,10 @@ impl Catalog {
             },
         };
 
-        let value = serde_json::from_slice(&body)
-            .map_err(|error| CatalogError::Malformed { path: path.to_owned(), reason: error.to_string() })?;
+        let value = serde_json::from_slice(&body).map_err(|error| CatalogError::Malformed {
+            path: path.to_owned(),
+            reason: error.to_string(),
+        })?;
 
         if freshness == Freshness::Downloaded {
             store(&body_file, &etag_file, &body, downloaded_etag).await;
@@ -106,7 +126,10 @@ impl Catalog {
 }
 
 fn unavailable(path: &str, reason: impl ToString) -> CatalogError {
-    CatalogError::Unavailable { path: path.to_owned(), reason: reason.to_string() }
+    CatalogError::Unavailable {
+        path: path.to_owned(),
+        reason: reason.to_string(),
+    }
 }
 
 /// A cache that cannot be written only costs bandwidth, so write failures are not errors.

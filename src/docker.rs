@@ -28,7 +28,11 @@ pub enum DockerError {
     #[error("Docker API is unreachable: {0}")]
     Transport(#[from] reqwest::Error),
     #[error("Docker API refused to {operation} ({status}): {message}")]
-    Api { operation: &'static str, status: u16, message: String },
+    Api {
+        operation: &'static str,
+        status: u16,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -75,31 +79,51 @@ impl Docker {
         let builder = reqwest::Client::builder();
 
         if let Some(address) = host.strip_prefix("tcp://").or_else(|| host.strip_prefix("http://")) {
-            return Ok(Self { client: builder.build()?, base: format!("http://{}", address.trim_end_matches('/')) });
+            return Ok(Self {
+                client: builder.build()?,
+                base: format!("http://{}", address.trim_end_matches('/')),
+            });
         }
 
         #[cfg(unix)]
         if let Some(path) = host.strip_prefix("unix://") {
-            return Ok(Self { client: builder.unix_socket(path).build()?, base: "http://localhost".to_owned() });
+            return Ok(Self {
+                client: builder.unix_socket(path).build()?,
+                base: "http://localhost".to_owned(),
+            });
         }
 
         Err(DockerError::UnsupportedHost(host.to_owned()))
     }
 
     pub async fn containers(&self) -> Result<Vec<ContainerSummary>, DockerError> {
-        let response = self.client.get(self.url("/containers/json")).timeout(INSPECT_TIMEOUT).send().await?;
+        let response = self
+            .client
+            .get(self.url("/containers/json"))
+            .timeout(INSPECT_TIMEOUT)
+            .send()
+            .await?;
         Ok(checked("list containers", response).await?.json().await?)
     }
 
     pub async fn environment_names(&self, container_id: &str) -> Result<BTreeSet<String>, DockerError> {
-        let response =
-            self.client.get(self.url(&format!("/containers/{container_id}/json"))).timeout(INSPECT_TIMEOUT).send().await?;
+        let response = self
+            .client
+            .get(self.url(&format!("/containers/{container_id}/json")))
+            .timeout(INSPECT_TIMEOUT)
+            .send()
+            .await?;
         let container: ContainerEnvironment = checked("inspect a container", response).await?.json().await?;
         Ok(container.config.env)
     }
 
     pub async fn image_digests(&self, image: &str) -> Result<Vec<String>, DockerError> {
-        let response = self.client.get(self.url(&format!("/images/{image}/json"))).timeout(INSPECT_TIMEOUT).send().await?;
+        let response = self
+            .client
+            .get(self.url(&format!("/images/{image}/json")))
+            .timeout(INSPECT_TIMEOUT)
+            .send()
+            .await?;
         let image: ImageDigests = checked("inspect an image", response).await?.json().await?;
         Ok(image.repo_digests.unwrap_or_default())
     }
@@ -120,19 +144,32 @@ impl Docker {
             .find_map(|event| event.get("error").and_then(Value::as_str).map(str::to_owned));
 
         match failure {
-            Some(message) => Err(DockerError::Api { operation: "pull an image", status: 200, message }),
+            Some(message) => Err(DockerError::Api {
+                operation: "pull an image",
+                status: 200,
+                message,
+            }),
             None => Ok(()),
         }
     }
 
     pub async fn inspect_container(&self, container_id: &str) -> Result<Value, DockerError> {
-        let response =
-            self.client.get(self.url(&format!("/containers/{container_id}/json"))).timeout(INSPECT_TIMEOUT).send().await?;
+        let response = self
+            .client
+            .get(self.url(&format!("/containers/{container_id}/json")))
+            .timeout(INSPECT_TIMEOUT)
+            .send()
+            .await?;
         Ok(checked("inspect a container", response).await?.json().await?)
     }
 
     pub async fn inspect_image(&self, image: &str) -> Result<Value, DockerError> {
-        let response = self.client.get(self.url(&format!("/images/{image}/json"))).timeout(INSPECT_TIMEOUT).send().await?;
+        let response = self
+            .client
+            .get(self.url(&format!("/images/{image}/json")))
+            .timeout(INSPECT_TIMEOUT)
+            .send()
+            .await?;
         Ok(checked("inspect an image", response).await?.json().await?)
     }
 
@@ -150,24 +187,41 @@ impl Docker {
     }
 
     pub async fn stop(&self, container_id: &str) -> Result<(), DockerError> {
-        self.command("stop a container", self.client.post(self.url(&format!("/containers/{container_id}/stop")))).await
+        self.command(
+            "stop a container",
+            self.client.post(self.url(&format!("/containers/{container_id}/stop"))),
+        )
+        .await
     }
 
     pub async fn start(&self, container_id: &str) -> Result<(), DockerError> {
-        self.command("start a container", self.client.post(self.url(&format!("/containers/{container_id}/start")))).await
+        self.command(
+            "start a container",
+            self.client.post(self.url(&format!("/containers/{container_id}/start"))),
+        )
+        .await
     }
 
     pub async fn rename(&self, container_id: &str, name: &str) -> Result<(), DockerError> {
-        let request = self.client.post(self.url(&format!("/containers/{container_id}/rename"))).query(&[("name", name)]);
+        let request = self
+            .client
+            .post(self.url(&format!("/containers/{container_id}/rename")))
+            .query(&[("name", name)]);
         self.command("rename a container", request).await
     }
 
     pub async fn remove(&self, container_id: &str) -> Result<(), DockerError> {
-        self.command("remove a container", self.client.delete(self.url(&format!("/containers/{container_id}")))).await
+        self.command(
+            "remove a container",
+            self.client.delete(self.url(&format!("/containers/{container_id}"))),
+        )
+        .await
     }
 
     async fn command(&self, operation: &'static str, request: reqwest::RequestBuilder) -> Result<(), DockerError> {
-        checked(operation, request.timeout(STOP_TIMEOUT).send().await?).await.map(|_| ())
+        checked(operation, request.timeout(STOP_TIMEOUT).send().await?)
+            .await
+            .map(|_| ())
     }
 
     fn url(&self, path: &str) -> String {
@@ -188,7 +242,11 @@ async fn checked(operation: &'static str, response: reqwest::Response) -> Result
         .and_then(|json| json.get("message").and_then(Value::as_str).map(str::to_owned))
         .unwrap_or(body);
 
-    Err(DockerError::Api { operation, status: status.as_u16(), message })
+    Err(DockerError::Api {
+        operation,
+        status: status.as_u16(),
+        message,
+    })
 }
 
 struct EnvName(String);
@@ -312,13 +370,19 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(container.labels.keys().map(String::as_str).collect::<Vec<_>>(), READ_LABELS);
+        assert_eq!(
+            container.labels.keys().map(String::as_str).collect::<Vec<_>>(),
+            READ_LABELS
+        );
         assert!(!format!("{container:?}").contains("secret"));
     }
 
     #[test]
     fn rejects_docker_hosts_it_cannot_reach() {
-        assert!(matches!(Docker::connect("ssh://nas"), Err(DockerError::UnsupportedHost(_))));
+        assert!(matches!(
+            Docker::connect("ssh://nas"),
+            Err(DockerError::UnsupportedHost(_))
+        ));
         assert!(Docker::connect("tcp://docker-proxy:2375").is_ok());
     }
 }

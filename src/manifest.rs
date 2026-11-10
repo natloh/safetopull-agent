@@ -106,16 +106,26 @@ impl Severity {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Condition {
     Always,
-    EnvKeyPresent { key: String },
-    EnvKeyMissing { key: String },
-    EnvValueMatches { key: String },
+    EnvKeyPresent {
+        key: String,
+    },
+    EnvKeyMissing {
+        key: String,
+    },
+    EnvValueMatches {
+        key: String,
+    },
     CompanionServiceImageMatches {
         #[serde(default)]
         service: Option<String>,
         pattern: String,
     },
-    HostArchEquals { arch: String },
-    MissingCpuFlag { flag: String },
+    HostArchEquals {
+        arch: String,
+    },
+    MissingCpuFlag {
+        flag: String,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -174,7 +184,11 @@ impl Action {
 
         match self {
             Self::RenameEnvKey { from_key, to_key } => text(format!("Rename {from_key} to {to_key}.")),
-            Self::AddEnvKey { key, default_value, required } => {
+            Self::AddEnvKey {
+                key,
+                default_value,
+                required,
+            } => {
                 let suggestion = default_value
                     .as_deref()
                     .filter(|value| !value.is_empty())
@@ -184,17 +198,32 @@ impl Action {
                 text(format!("Add {key}{suggestion}{requirement}."))
             }
             Self::RemoveEnvKey { key } => text(format!("Remove {key}.")),
-            Self::ReplaceCompanionImage { service, from_image, to_image } => {
+            Self::ReplaceCompanionImage {
+                service,
+                from_image,
+                to_image,
+            } => {
                 let service = service.as_deref().unwrap_or("companion");
-                let from = from_image.as_deref().map(|image| format!(" from {image}")).unwrap_or_default();
+                let from = from_image
+                    .as_deref()
+                    .map(|image| format!(" from {image}"))
+                    .unwrap_or_default();
                 text(format!("Change the {service} image{from} to {to_image}."))
             }
-            Self::UpdateVolumeTarget { service, from_target, to_target } => {
+            Self::UpdateVolumeTarget {
+                service,
+                from_target,
+                to_target,
+            } => {
                 let service = service.as_deref().map(|name| format!("{name} ")).unwrap_or_default();
-                text(format!("Change the {service}volume mount target from {from_target} to {to_target}."))
+                text(format!(
+                    "Change the {service}volume mount target from {from_target} to {to_target}."
+                ))
             }
             Self::ManualCliIntervention { command, instructions } => Some(Instruction {
-                text: instructions.clone().unwrap_or_else(|| "Run this command before updating.".to_owned()),
+                text: instructions
+                    .clone()
+                    .unwrap_or_else(|| "Run this command before updating.".to_owned()),
                 command: command.clone(),
             }),
             Self::RequireSteppingStone { .. } | Self::Unknown => None,

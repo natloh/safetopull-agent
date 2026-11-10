@@ -1,0 +1,28 @@
+# Advisory mode (the default): the agent can read container and image metadata and nothing else.
+# It never sees the Docker socket; the proxy only forwards GET requests for the two sections below.
+services:
+  safetopull:
+    image: ghcr.io/natloh/safetopull-agent:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      STP_DOCKER_HOST: tcp://docker-proxy:2375
+    ports:
+      - "8484:8484"
+    volumes:
+      - safetopull-data:/data
+    depends_on: [docker-proxy]
+
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+volumes:
+  safetopull-data:

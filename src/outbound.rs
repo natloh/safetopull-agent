@@ -11,7 +11,9 @@ use serde::Serialize;
 const KEPT_RECORDS: usize = 50;
 
 pub fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -36,7 +38,10 @@ impl Outbound {
             .timeout(Duration::from_secs(30))
             .build()?;
 
-        Ok(Self { client, log: Arc::default() })
+        Ok(Self {
+            client,
+            log: Arc::default(),
+        })
     }
 
     pub fn client(&self) -> &reqwest::Client {
@@ -46,7 +51,11 @@ impl Outbound {
     pub async fn send(&self, purpose: &'static str, request: RequestBuilder) -> Result<Response, reqwest::Error> {
         let request = request.build()?;
         let method = request.method().to_string();
-        let url = format!("{}{}", request.url().origin().ascii_serialization(), request.url().path());
+        let url = format!(
+            "{}{}",
+            request.url().origin().ascii_serialization(),
+            request.url().path()
+        );
 
         let result = self.client.execute(request).await;
 
@@ -66,6 +75,12 @@ impl Outbound {
     }
 
     pub fn recent(&self) -> Vec<OutboundRecord> {
-        self.log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).iter().rev().cloned().collect()
+        self.log
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .rev()
+            .cloned()
+            .collect()
     }
 }

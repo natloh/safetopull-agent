@@ -57,7 +57,10 @@ pub struct Scanner {
 
 impl Scanner {
     pub async fn scan(&self) -> Snapshot {
-        let mut snapshot = Snapshot { scanned_at: now(), ..Snapshot::default() };
+        let mut snapshot = Snapshot {
+            scanned_at: now(),
+            ..Snapshot::default()
+        };
 
         let index = match self.catalog.index().await {
             Ok(index) => {
@@ -89,19 +92,33 @@ impl Scanner {
 
             if !manifests.contains_key(&app.slug) {
                 let fetched = self.catalog.manifest(&app.slug).await;
-                snapshot.dataset_stale |= fetched.as_ref().is_ok_and(|manifest| manifest.freshness == Freshness::Stale);
-                manifests.insert(app.slug.clone(), fetched.map(|manifest| manifest.value).map_err(|error| error.to_string()));
+                snapshot.dataset_stale |= fetched
+                    .as_ref()
+                    .is_ok_and(|manifest| manifest.freshness == Freshness::Stale);
+                manifests.insert(
+                    app.slug.clone(),
+                    fetched
+                        .map(|manifest| manifest.value)
+                        .map_err(|error| error.to_string()),
+                );
             }
 
             let stack: Vec<&RunningService> = running
                 .iter()
-                .filter(|other| other.container_id == service.container_id || (service.stack.is_some() && other.stack == service.stack))
+                .filter(|other| {
+                    other.container_id == service.container_id
+                        || (service.stack.is_some() && other.stack == service.stack)
+                })
                 .collect();
 
             let mut env_keys = BTreeSet::new();
             for member in &stack {
                 if !environments.contains_key(&member.container_id) {
-                    let names = self.docker.environment_names(&member.container_id).await.unwrap_or_default();
+                    let names = self
+                        .docker
+                        .environment_names(&member.container_id)
+                        .await
+                        .unwrap_or_default();
                     environments.insert(member.container_id.clone(), names);
                 }
                 env_keys.extend(environments[&member.container_id].iter().cloned());
@@ -110,7 +127,10 @@ impl Scanner {
             let companions: Vec<Companion> = stack
                 .iter()
                 .filter(|member| member.container_id != service.container_id)
-                .map(|member| Companion { service: member.name.clone(), image: member.image_text.clone() })
+                .map(|member| Companion {
+                    service: member.name.clone(),
+                    image: member.image_text.clone(),
+                })
                 .collect();
 
             let mut status = ServiceStatus::unassessed(service, &app.slug, &app.name);
@@ -158,8 +178,11 @@ impl Scanner {
                 "The image digest is not in the dataset and its tag is not a version. Pin a version tag to get a verdict.".to_owned();
             return;
         };
-        status.current_version =
-            Some(manifest.release(current).map_or_else(|| format!("v{current}"), |release| release.version.clone()));
+        status.current_version = Some(
+            manifest
+                .release(current)
+                .map_or_else(|| format!("v{current}"), |release| release.version.clone()),
+        );
 
         if current >= latest.parsed_version() {
             status.verdict = Verdict::Green;
@@ -170,7 +193,11 @@ impl Scanner {
         }
 
         let direct = triage::assess(manifest, current, latest, observed);
-        let stone = direct.stepping_stones.first().and_then(|tag| Version::parse(tag)).and_then(|version| manifest.release(version));
+        let stone = direct
+            .stepping_stones
+            .first()
+            .and_then(|tag| Version::parse(tag))
+            .and_then(|version| manifest.release(version));
         let (target, mut assessment): (&Release, Assessment) = match stone {
             Some(stone) => (stone, triage::assess(manifest, current, stone, observed)),
             None => (latest, direct),
@@ -188,7 +215,10 @@ impl Scanner {
         status.update_note = match (updatable, rolling, stone.is_some()) {
             (false, _, _) => None,
             (true, _, true) => Some(format!("Set the image tag to {} to take this step.", target.version)),
-            (true, false, false) => Some(format!("Pinned to {tag}: set the image tag to {} and recreate the service.", target.version)),
+            (true, false, false) => Some(format!(
+                "Pinned to {tag}: set the image tag to {} and recreate the service.",
+                target.version
+            )),
             (true, true, false) if self.update_mode == UpdateMode::Advisory => None,
             (true, true, false) => Some(format!("Pulls {tag} and recreates the container.")),
         };

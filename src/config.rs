@@ -42,8 +42,15 @@ impl Config {
     }
 
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
-        let value = |variable: &str| lookup(variable).map(|value| value.trim().to_owned()).filter(|value| !value.is_empty());
-        let invalid = |variable: &'static str, reason: &str| ConfigError { variable, reason: reason.to_owned() };
+        let value = |variable: &str| {
+            lookup(variable)
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        };
+        let invalid = |variable: &'static str, reason: &str| ConfigError {
+            variable,
+            reason: reason.to_owned(),
+        };
 
         let listen = value("STP_LISTEN")
             .unwrap_or_else(|| "0.0.0.0:8484".to_owned())
@@ -86,7 +93,10 @@ impl Config {
 }
 
 fn base_url(configured: Option<String>) -> String {
-    configured.unwrap_or_else(|| "https://safetopull.com".to_owned()).trim_end_matches('/').to_owned()
+    configured
+        .unwrap_or_else(|| "https://safetopull.com".to_owned())
+        .trim_end_matches('/')
+        .to_owned()
 }
 
 #[cfg(test)]
@@ -95,7 +105,10 @@ mod tests {
 
     fn config(pairs: &[(&str, &str)]) -> Result<Config, ConfigError> {
         Config::from_lookup(|variable| {
-            pairs.iter().find(|(name, _)| *name == variable).map(|(_, value)| (*value).to_owned())
+            pairs
+                .iter()
+                .find(|(name, _)| *name == variable)
+                .map(|(_, value)| (*value).to_owned())
         })
     }
 
@@ -132,6 +145,9 @@ mod tests {
 
     #[test]
     fn trims_trailing_slashes_from_urls() {
-        assert_eq!(config(&[("STP_DATASET_URL", "http://cdn.test/")]).unwrap().dataset_url, "http://cdn.test");
+        assert_eq!(
+            config(&[("STP_DATASET_URL", "http://cdn.test/")]).unwrap().dataset_url,
+            "http://cdn.test"
+        );
     }
 }

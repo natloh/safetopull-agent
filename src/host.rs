@@ -13,7 +13,9 @@ impl HostFacts {
     pub fn detect() -> Self {
         Self {
             arch: docker_arch(std::env::consts::ARCH).to_owned(),
-            cpu_flags: std::fs::read_to_string("/proc/cpuinfo").ok().and_then(|text| parse_cpu_flags(&text)),
+            cpu_flags: std::fs::read_to_string("/proc/cpuinfo")
+                .ok()
+                .and_then(|text| parse_cpu_flags(&text)),
         }
     }
 }

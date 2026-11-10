@@ -1,0 +1,33 @@
+# Apply mode: the agent may pull images and recreate containers, but only when you ask it to.
+# POST: 1 lets the proxy forward write requests for containers and images. Set an API token so
+# that reaching port 8484 is not enough to start an update.
+services:
+  safetopull:
+    image: ghcr.io/natloh/safetopull-agent:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      STP_DOCKER_HOST: tcp://docker-proxy:2375
+      STP_UPDATE_MODE: apply
+      STP_API_TOKEN: ${STP_API_TOKEN:?set STP_API_TOKEN to a long random value}
+      # STP_REMOTE_ACTIONS: "true"   # also accept updates requested from a linked account
+    ports:
+      - "8484:8484"
+    volumes:
+      - safetopull-data:/data
+    depends_on: [docker-proxy]
+
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      POST: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+volumes:
+  safetopull-data:

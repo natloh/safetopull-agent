@@ -20,9 +20,7 @@ impl Version {
         let tag = tag.rsplit_once('@').map_or(tag, |(_, version)| version);
         let tag = tag.trim_start_matches(['v', 'V']);
 
-        let numeric_len = tag
-            .find(|c: char| !c.is_ascii_digit() && c != '.')
-            .unwrap_or(tag.len());
+        let numeric_len = tag.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(tag.len());
         let (numeric, suffix) = tag.split_at(numeric_len);
 
         if !(suffix.is_empty() || suffix.starts_with(['-', '+'])) {
@@ -72,7 +70,16 @@ mod tests {
 
     #[test]
     fn rejects_rolling_and_malformed_tags() {
-        for tag in ["latest", "release", "", "v", "1..2", "1.2.3.4.5", "1.2.3abc", "pg14-v0.2.0"] {
+        for tag in [
+            "latest",
+            "release",
+            "",
+            "v",
+            "1..2",
+            "1.2.3.4.5",
+            "1.2.3abc",
+            "pg14-v0.2.0",
+        ] {
             assert_eq!(Version::parse(tag), None, "{tag}");
         }
     }

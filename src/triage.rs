@@ -71,7 +71,10 @@ impl Assessment {
     }
 
     pub fn warning_count(&self) -> usize {
-        self.findings.iter().filter(|finding| finding.severity == Severity::Warning).count()
+        self.findings
+            .iter()
+            .filter(|finding| finding.severity == Severity::Warning)
+            .count()
     }
 }
 
@@ -115,7 +118,10 @@ pub fn assess(manifest: &AppManifest, from: Version, target: &Release, observed:
                     slug: format!("cpu-{flag}"),
                     severity: Severity::Blocking,
                     category: "cpu_requirement".to_owned(),
-                    explanation: format!("{} requires the {flag} CPU instruction set, which this host lacks.", release.version),
+                    explanation: format!(
+                        "{} requires the {flag} CPU instruction set, which this host lacks.",
+                        release.version
+                    ),
                     instruction: Some("Do not update on this machine.".to_owned()),
                     command: None,
                 }),
@@ -136,7 +142,11 @@ pub fn assess(manifest: &AppManifest, from: Version, target: &Release, observed:
         }
     }
 
-    if let Some(false) = target.arch_readiness.get(observed.variant).and_then(|archs| archs.get(observed.arch)) {
+    if let Some(false) = target
+        .arch_readiness
+        .get(observed.variant)
+        .and_then(|archs| archs.get(observed.arch))
+    {
         findings.push(Finding {
             release: target.version.clone(),
             slug: "arch-not-ready".to_owned(),
@@ -151,7 +161,10 @@ pub fn assess(manifest: &AppManifest, from: Version, target: &Release, observed:
     stones.sort();
     let stepping_stones: Vec<String> = stones.into_iter().map(|(_, tag)| tag).collect();
     let blocking = findings.iter().filter(|finding| finding.severity.blocks()).count();
-    let warnings = findings.iter().filter(|finding| finding.severity == Severity::Warning).count();
+    let warnings = findings
+        .iter()
+        .filter(|finding| finding.severity == Severity::Warning)
+        .count();
 
     let verdict = if blocking > 0 {
         Verdict::Red
@@ -161,8 +174,21 @@ pub fn assess(manifest: &AppManifest, from: Version, target: &Release, observed:
         Verdict::Green
     };
 
-    let (headline, summary) = describe(verdict, releases.len(), blocking, warnings, &stepping_stones, database_migration);
-    let steps = steps(&findings, &stepping_stones, &unverified_cpu_flags, database_migration, &target.version);
+    let (headline, summary) = describe(
+        verdict,
+        releases.len(),
+        blocking,
+        warnings,
+        &stepping_stones,
+        database_migration,
+    );
+    let steps = steps(
+        &findings,
+        &stepping_stones,
+        &unverified_cpu_flags,
+        database_migration,
+        &target.version,
+    );
 
     Assessment {
         verdict,
@@ -190,8 +216,14 @@ fn applies(condition: &Condition, observed: &Observed) -> bool {
                 .iter()
                 .filter(|companion| service.as_deref() == Some(companion.service.as_str()))
                 .collect();
-            let candidates = if named.is_empty() { observed.companions.iter().collect() } else { named };
-            candidates.iter().any(|companion| glob_matches(pattern, &companion.image))
+            let candidates = if named.is_empty() {
+                observed.companions.iter().collect()
+            } else {
+                named
+            };
+            candidates
+                .iter()
+                .any(|companion| glob_matches(pattern, &companion.image))
         }
         Condition::HostArchEquals { arch } => arch.eq_ignore_ascii_case(observed.arch),
         Condition::MissingCpuFlag { flag } => observed.cpu_flags.is_none_or(|flags| !flags.contains(flag)),
@@ -254,7 +286,10 @@ fn describe(
     match verdict {
         Verdict::Red => (
             "Hold back".to_owned(),
-            format!("{} must be handled before this update. {span} checked.", plural(blocking, "breaking change")),
+            format!(
+                "{} must be handled before this update. {span} checked.",
+                plural(blocking, "breaking change")
+            ),
         ),
         Verdict::Yellow => {
             let mut reasons = Vec::new();
@@ -270,9 +305,15 @@ fn describe(
             if reasons.is_empty() {
                 reasons.push("confirm a CPU requirement".to_owned());
             }
-            ("Update with care".to_owned(), format!("{span} checked: {}.", reasons.join("; ")))
+            (
+                "Update with care".to_owned(),
+                format!("{span} checked: {}.", reasons.join("; ")),
+            )
         }
-        Verdict::Green => ("Safe to update".to_owned(), format!("{span} checked, nothing to change.")),
+        Verdict::Green => (
+            "Safe to update".to_owned(),
+            format!("{span} checked, nothing to change."),
+        ),
         Verdict::Unknown => ("Not checked".to_owned(), String::new()),
     }
 }
@@ -284,8 +325,10 @@ fn steps(
     database_migration: bool,
     target: &str,
 ) -> Vec<Step> {
-    let actionable: Vec<&Finding> =
-        findings.iter().filter(|finding| finding.severity != Severity::Info && finding.instruction.is_some()).collect();
+    let actionable: Vec<&Finding> = findings
+        .iter()
+        .filter(|finding| finding.severity != Severity::Info && finding.instruction.is_some())
+        .collect();
     let needs_care = !actionable.is_empty() || database_migration || !stones.is_empty();
     let mut steps = Vec::new();
 
@@ -382,7 +425,11 @@ mod tests {
     }
 
     fn slugs(assessment: &Assessment) -> Vec<&str> {
-        assessment.findings.iter().map(|finding| finding.slug.as_str()).collect()
+        assessment
+            .findings
+            .iter()
+            .map(|finding| finding.slug.as_str())
+            .collect()
     }
 
     #[test]
@@ -417,7 +464,11 @@ mod tests {
 
         assert_eq!(
             slugs(&assessment),
-            ["immich-v2-vectorchord-swap", "immich-v2-volume-target", "immich-v2-env-postgres-host"]
+            [
+                "immich-v2-vectorchord-swap",
+                "immich-v2-volume-target",
+                "immich-v2-env-postgres-host"
+            ]
         );
         assert_eq!(assessment.blocking_count(), 2);
         assert_eq!(assessment.warning_count(), 1);
@@ -428,7 +479,10 @@ mod tests {
         let assessment = Host::modern().assess(&manifest("immich"), "v1.132.0", "v2.0.0");
 
         assert_eq!(assessment.stepping_stones, ["v1.133.0"]);
-        assert!(assessment.steps.iter().any(|step| step.title == "Update to v1.133.0 first"));
+        assert!(assessment
+            .steps
+            .iter()
+            .any(|step| step.title == "Update to v1.133.0 first"));
     }
 
     #[test]
@@ -460,13 +514,24 @@ mod tests {
     #[test]
     fn an_unpublished_architecture_blocks_the_target() {
         let mut manifest = manifest("immich");
-        let target = manifest.releases.iter_mut().find(|release| release.version == "v1.133.0").unwrap();
-        target.arch_readiness.get_mut("official").unwrap().insert("arm64".to_owned(), false);
+        let target = manifest
+            .releases
+            .iter_mut()
+            .find(|release| release.version == "v1.133.0")
+            .unwrap();
+        target
+            .arch_readiness
+            .get_mut("official")
+            .unwrap()
+            .insert("arm64".to_owned(), false);
 
         let mut host = Host::modern();
         host.arch = "arm64";
 
-        assert_eq!(slugs(&host.assess(&manifest, "v1.132.0", "v1.133.0")), ["arch-not-ready"]);
+        assert_eq!(
+            slugs(&host.assess(&manifest, "v1.132.0", "v1.133.0")),
+            ["arch-not-ready"]
+        );
     }
 
     #[test]
@@ -481,7 +546,13 @@ mod tests {
         }))
         .unwrap();
         let mut manifest = manifest("immich");
-        manifest.releases.iter_mut().find(|release| release.version == "v1.133.0").unwrap().rules.push(rule);
+        manifest
+            .releases
+            .iter_mut()
+            .find(|release| release.version == "v1.133.0")
+            .unwrap()
+            .rules
+            .push(rule);
 
         let assessment = Host::modern().assess(&manifest, "v1.132.0", "v1.133.0");
 

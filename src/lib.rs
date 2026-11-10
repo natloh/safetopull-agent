@@ -1,4 +1,6 @@
+pub mod app;
 pub mod catalog;
+pub mod cloud;
 pub mod config;
 pub mod docker;
 pub mod host;
@@ -7,4 +9,6 @@ pub mod manifest;
 pub mod outbound;
 pub mod scan;
 pub mod triage;
+pub mod update;
 pub mod version;
+pub mod web;
