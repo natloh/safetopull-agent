@@ -79,6 +79,23 @@ pub struct RunningService {
     pub labelled_version: Option<String>,
 }
 
+impl RunningService {
+    /// Docker lists a bare image ID instead of the reference once the tag has moved to a newer
+    /// image, for example after a pull that was not followed by a recreate.
+    pub fn is_listed_by_image_id(&self) -> bool {
+        self.image_text.starts_with("sha256:")
+    }
+
+    pub fn identify_image(&mut self, reference: &str) {
+        self.image_text = without_digest(reference);
+        self.image = ImageRef::parse(reference);
+    }
+}
+
+fn without_digest(reference: &str) -> String {
+    reference.split('@').next().unwrap_or_default().to_owned()
+}
+
 pub fn running_services(containers: Vec<ContainerSummary>) -> Vec<RunningService> {
     containers
         .into_iter()
@@ -101,7 +118,7 @@ pub fn running_services(containers: Vec<ContainerSummary>) -> Vec<RunningService
                 key,
                 name,
                 stack,
-                image_text: container.image.split('@').next().unwrap_or_default().to_owned(),
+                image_text: without_digest(&container.image),
                 image,
                 image_id: container.image_id,
                 labelled_version: container.labels.get(VERSION_LABEL).cloned(),

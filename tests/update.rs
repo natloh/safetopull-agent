@@ -24,6 +24,7 @@ async fn pulls_verifies_and_swaps_a_rolling_tag_container() {
 
     let calls = lab.docker.calls();
     let order = [
+        "tag sha256:nc29 docker.io/library/nextcloud:latest-stp-previous",
         "pull docker.io/library/nextcloud:latest",
         "stop nc1",
         "rename nc1 nextcloud-stp-previous",
@@ -33,6 +34,9 @@ async fn pulls_verifies_and_swaps_a_rolling_tag_container() {
     ]
     .map(|call| position(&calls, call));
     assert!(order.is_sorted(), "{calls:?}");
+    assert!(!calls.contains(
+        &"tag docker.io/library/nextcloud:latest-stp-previous docker.io/library/nextcloud:latest".to_owned()
+    ));
 }
 
 #[tokio::test]
@@ -49,6 +53,7 @@ async fn recreates_the_container_from_its_own_settings_minus_the_old_image_defau
     assert_eq!(spec["Env"], json!(["NEXTCLOUD_ADMIN_PASSWORD=hunter2"]));
     assert_eq!(spec["HostConfig"]["Binds"], json!(["/srv/data:/data"]));
     assert_eq!(spec["Labels"]["com.docker.compose.service"], "nextcloud");
+    assert_eq!(spec["Labels"]["com.docker.compose.image"], "sha256:new");
     assert_eq!(
         spec["NetworkingConfig"]["EndpointsConfig"]["media_default"],
         json!({"Aliases": ["nextcloud"]})
@@ -72,7 +77,14 @@ async fn changes_nothing_when_the_tag_moved_to_a_release_that_was_not_checked() 
     let error = app.update("cloud/nextcloud", true, None).await.unwrap_err();
 
     assert!(matches!(error, UpdateError::UnexpectedVersion { .. }), "{error}");
-    assert!(!lab.docker.calls().iter().any(|call| call.starts_with("stop")));
+    let calls = lab.docker.calls();
+    assert!(!calls.iter().any(|call| call.starts_with("stop")));
+    assert!(
+        calls.contains(
+            &"tag docker.io/library/nextcloud:latest-stp-previous docker.io/library/nextcloud:latest".to_owned()
+        ),
+        "the tag must point back at the running image"
+    );
 }
 
 #[tokio::test]
@@ -87,7 +99,13 @@ async fn restores_the_previous_container_when_the_replacement_does_not_start() {
 
     assert!(matches!(error, UpdateError::RolledBack(_)), "{error}");
     let calls = lab.docker.calls();
-    let order = ["remove new-container", "rename nc1 nextcloud", "start nc1"].map(|call| position(&calls, call));
+    let order = [
+        "remove new-container",
+        "rename nc1 nextcloud",
+        "start nc1",
+        "tag docker.io/library/nextcloud:latest-stp-previous docker.io/library/nextcloud:latest",
+    ]
+    .map(|call| position(&calls, call));
     assert!(order.is_sorted(), "{calls:?}");
     assert!(!calls.contains(&"remove nc1".to_owned()));
 }
@@ -140,4 +158,26 @@ async fn refuses_services_it_does_not_track_or_cannot_update_itself() {
         app.update("immich-server", true, None).await,
         Err(UpdateError::NotUpdatable(_))
     ));
+}
+
+#[tokio::test]
+async fn refuses_before_pulling_when_the_image_the_container_came_from_is_gone() {
+    let lab = Lab::new();
+    lab.run_nextcloud_29();
+    lab.publish_nextcloud_latest("sha256:nextcloud30index");
+    let (app, _) = lab.app(&APPLY).await;
+    lab.docker.move_tag_away_from("nc1");
+
+    let error = app.update("cloud/nextcloud", true, None).await.unwrap_err();
+
+    assert!(matches!(error, UpdateError::NotUpdatable(_)), "{error}");
+    assert!(
+        !app.status().await.snapshot.services[0].can_update,
+        "the next scan stops offering the update"
+    );
+    assert!(!lab
+        .docker
+        .calls()
+        .iter()
+        .any(|call| call.starts_with("pull") || call.starts_with("stop")));
 }

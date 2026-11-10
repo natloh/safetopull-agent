@@ -119,6 +119,7 @@ impl FakeDocker {
         if let Some(stack) = container.stack {
             labels["com.docker.compose.project"] = json!(stack);
             labels["com.docker.compose.service"] = json!(container.name);
+            labels["com.docker.compose.image"] = json!(container.image_id);
         }
 
         let mut state = self.0.lock().unwrap();
@@ -167,6 +168,20 @@ impl FakeDocker {
         );
     }
 
+    /// What a real engine reports after the tag moved on: the container is listed by image ID and
+    /// (with the containerd image store) the old image can no longer be inspected.
+    pub fn move_tag_away_from(&self, container_id: &str) {
+        let mut state = self.0.lock().unwrap();
+        let listed = state
+            .containers
+            .iter_mut()
+            .find(|container| container["Id"] == container_id)
+            .unwrap();
+        let image_id = listed["ImageID"].as_str().unwrap().to_owned();
+        listed["Image"] = json!(image_id);
+        state.images.remove(&image_id);
+    }
+
     pub fn publish_image(&self, reference: &str, image: Value) {
         self.0.lock().unwrap().images.insert(reference.to_owned(), image);
     }
@@ -191,7 +206,7 @@ impl FakeDocker {
             .route("/containers/{id}/{action}", post(container_action))
             .route("/containers/{id}", delete(remove_container))
             .route("/images/create", post(pull_image))
-            .route("/images/{*reference}", get(inspect_image))
+            .route("/images/{*reference}", get(inspect_image).post(tag_image))
             .with_state(self.clone());
 
         serve(router).await.replacen("http://", "tcp://", 1)
@@ -215,6 +230,21 @@ async fn inspect_container(State(docker): State<FakeDocker>, Path(id): Path<Stri
         )
             .into_response(),
     }
+}
+
+async fn tag_image(
+    State(docker): State<FakeDocker>,
+    Path(source): Path<String>,
+    Query(query): Query<HashMap<String, String>>,
+) -> StatusCode {
+    let source = source.trim_end_matches("/tag");
+    let target = format!("{}:{}", query["repo"], query["tag"]);
+    let mut state = docker.0.lock().unwrap();
+    state.calls.push(format!("tag {source} {target}"));
+    if let Some(image) = state.images.get(source).cloned() {
+        state.images.insert(target, image);
+    }
+    StatusCode::CREATED
 }
 
 async fn inspect_image(State(docker): State<FakeDocker>, Path(reference): Path<String>) -> Response {

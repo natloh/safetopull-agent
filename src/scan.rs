@@ -6,12 +6,13 @@ use serde::Serialize;
 
 use crate::catalog::{Catalog, Freshness};
 use crate::config::UpdateMode;
-use crate::docker::Docker;
+use crate::docker::{Docker, DockerError};
 use crate::host::HostFacts;
 use crate::inventory::{self, ImageRef, RunningService};
 use crate::manifest::{AppManifest, IndexedImage, Release};
 use crate::outbound::now;
 use crate::triage::{self, Assessment, Companion, Observed, Verdict};
+use crate::update::PREVIOUS_IMAGE_GONE;
 use crate::version::Version;
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -73,7 +74,7 @@ impl Scanner {
             }
         };
 
-        let running = match self.docker.containers().await {
+        let mut running = match self.docker.containers().await {
             Ok(containers) => inventory::running_services(containers),
             Err(error) => {
                 snapshot.docker_error = Some(error.to_string());
@@ -83,6 +84,13 @@ impl Scanner {
 
         let mut manifests: HashMap<String, Result<AppManifest, String>> = HashMap::new();
         let mut environments: HashMap<String, BTreeSet<String>> = HashMap::new();
+
+        for service in running.iter_mut().filter(|service| service.is_listed_by_image_id()) {
+            if let Ok(details) = self.docker.container_details(&service.container_id).await {
+                service.identify_image(&details.reference);
+                environments.insert(service.container_id.clone(), details.environment_names);
+            }
+        }
 
         for service in &running {
             let Some((app, indexed)) = inventory::match_app(&index, &service.image) else {
@@ -116,8 +124,9 @@ impl Scanner {
                 if !environments.contains_key(&member.container_id) {
                     let names = self
                         .docker
-                        .environment_names(&member.container_id)
+                        .container_details(&member.container_id)
                         .await
+                        .map(|details| details.environment_names)
                         .unwrap_or_default();
                     environments.insert(member.container_id.clone(), names);
                 }
@@ -138,7 +147,9 @@ impl Scanner {
             match &manifests[&app.slug] {
                 Err(error) => status.summary = error.clone(),
                 Ok(manifest) => {
-                    let digests = self.docker.image_digests(&service.image_id).await.unwrap_or_default();
+                    let inspected = self.docker.image_digests(&service.image_id).await;
+                    let image_gone = matches!(inspected, Err(DockerError::Api { status: 404, .. }));
+                    let digests = inspected.unwrap_or_default();
                     let observed = Observed {
                         env_keys: &env_keys,
                         companions: &companions,
@@ -147,6 +158,11 @@ impl Scanner {
                         variant: &indexed.variant,
                     };
                     self.assess(&mut status, manifest, indexed, service, &digests, &observed);
+
+                    if image_gone && status.can_update {
+                        status.can_update = false;
+                        status.update_note = Some(PREVIOUS_IMAGE_GONE.to_owned());
+                    }
                 }
             }
 
@@ -230,12 +246,14 @@ impl Scanner {
     }
 }
 
-/// Digest first, because a tag only says what was asked for, not what is running.
+/// Digest first, because a tag only says what was asked for, not what is running. The image ID is
+/// tried as a digest too: with the containerd image store it is the manifest digest.
 fn running_version(manifest: &AppManifest, service: &RunningService, digests: &[String]) -> Option<Version> {
     let by_digest = digests
         .iter()
         .filter_map(|repo_digest| repo_digest.rsplit_once('@').map(|(_, digest)| digest))
         .chain(service.image.digest.as_deref())
+        .chain([service.image_id.as_str()])
         .find_map(|digest| manifest.digest_map.get(digest))
         .and_then(|entry| Version::parse(&entry.version));
 

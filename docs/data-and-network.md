@@ -10,14 +10,14 @@ Advisory mode makes three kinds of request, all `GET` ([`src/docker.rs`](../src/
 | Request | Fields kept | Used for |
 | --- | --- | --- |
 | `/containers/json` | `Id`, `Names`, `Image`, `ImageID`, and the labels `com.docker.compose.project`, `com.docker.compose.service`, `org.opencontainers.image.version` | Recognising apps and grouping them by compose project |
-| `/containers/{id}/json` | The *names* of `Config.Env` entries (text before `=`) | Rules such as "applies if `DB_HOSTNAME` is set" |
+| `/containers/{id}/json` | `Config.Image` and the *names* of `Config.Env` entries (text before `=`) | Rules such as "applies if `DB_HOSTNAME` is set"; the image reference when Docker lists the container by image ID |
 | `/images/{id}/json` | `RepoDigests` | Identifying the exact running release |
 
 Every other field in those responses is skipped by the parser. Environment values are discarded by
 `EnvName` and non-listed labels by `allowed_labels`, both in `src/docker.rs`; the tests
 `environment_values_never_survive_parsing` and `only_allow_listed_labels_are_kept` assert it.
 
-Apply mode additionally calls `POST /images/create`, `GET /containers/{id}/json`,
+Apply mode additionally calls `POST /images/{id}/tag`, `POST /images/create`, `GET /containers/{id}/json`,
 `GET /images/{name}/json`, `POST /containers/create`, `POST /containers/{id}/stop|start|rename` and
 `DELETE /containers/{id}` ([`src/update.rs`](../src/update.rs)). The container's own configuration,
 including its environment, is passed from the inspect response to the create request on the same

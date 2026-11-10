@@ -61,7 +61,11 @@ impl App {
                 host: host.clone(),
                 update_mode: config.update_mode,
             },
-            updater: Updater { docker, catalog },
+            updater: Updater {
+                docker,
+                catalog,
+                arch: host.arch.clone(),
+            },
             snapshot: RwLock::default(),
             scanning: Mutex::default(),
             updating: Mutex::default(),

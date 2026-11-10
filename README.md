@@ -29,6 +29,22 @@ Open `http://<your-host>:8484`.
 capabilities) and a [socket proxy](https://github.com/Tecnativa/docker-socket-proxy) that forwards
 only read requests for containers and images. The agent itself never gets the Docker socket.
 
+### Without a socket proxy
+
+The agent can also read the socket directly:
+
+```yaml
+    environment:
+      STP_DOCKER_HOST: unix:///var/run/docker.sock
+    group_add: ["<gid that owns the socket>"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+```
+
+The container runs as UID 65532, so it needs the socket's group. Access to the socket is full
+control of Docker, and mounting it `:ro` does not restrict what can be requested through it. The
+proxy is what makes the advisory setup read-only in fact; prefer it.
+
 ## Configuration
 
 All settings are environment variables.
@@ -65,17 +81,24 @@ When a release requires passing through an intermediate version, that version be
 
 ## Updating from the agent (opt-in)
 
-With `STP_UPDATE_MODE=apply` (see [`compose.apply.yaml`](compose.apply.yaml)) the dashboard offers
-an update button for services that
+With `STP_UPDATE_MODE=apply` (see [`compose.apply.yaml`](compose.apply.yaml); the socket proxy
+then needs `POST: 1`) the dashboard offers an update button for services that
 
 - have a `green` or `yellow` verdict (`yellow` asks you to confirm the steps),
 - run a rolling tag such as `latest` or `release`, and
 - do not need an intermediate version first.
 
 The agent pulls the tag, checks that the pulled digest is exactly the release it assessed, then
-recreates the container from its current settings. If the new container does not start, the
-previous one is restored. A `red` verdict is never applied. Services pinned to a version tag are
-not changed; the dashboard tells you which tag to set.
+recreates the container from its current settings. The image it replaces stays on the host as
+`<tag>-stp-previous`. If the pulled image is not the assessed release, or the new container does
+not start, the previous container is restored and the tag is pointed back at the previous image.
+
+A `red` verdict is never applied. Services pinned to a version tag are not changed; the dashboard
+tells you which tag to set. A container whose image is no longer on the host (the tag was already
+moved by a manual pull) is not rebuilt; recreate it yourself and the agent picks up from there.
+
+The labels Docker Compose uses to detect drift are kept consistent, so a later
+`docker compose up -d` leaves an updated container alone.
 
 ## Linking to an account (optional)
 

@@ -214,7 +214,11 @@ async fn a_docker_or_dataset_outage_is_reported_instead_of_showing_an_empty_heal
         },
         update_mode: UpdateMode::Advisory,
     };
-    assert!(scanner.scan().await.docker_error.is_some());
+    let docker_error = scanner.scan().await.docker_error.unwrap();
+    assert!(
+        docker_error.contains("os error"),
+        "the root cause must be shown: {docker_error}"
+    );
 
     let no_dataset = Lab::new();
     no_dataset.dataset.fail(true);
@@ -275,4 +279,26 @@ async fn never_caches_a_malformed_file_and_rejects_slugs_that_could_escape_the_c
         catalog.manifest("unknown-app").await,
         Err(CatalogError::Unavailable { .. })
     ));
+}
+
+#[tokio::test]
+async fn recognises_a_container_that_docker_lists_by_image_id_after_its_tag_moved() {
+    let lab = Lab::new();
+    lab.docker.run(FakeContainer {
+        id: "immich1",
+        name: "immich-server",
+        image: "ghcr.io/immich-app/immich-server:release",
+        image_id: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        stack: Some("media"),
+        env: &["DB_HOSTNAME=db"],
+        repo_digests: &[],
+    });
+    lab.docker.move_tag_away_from("immich1");
+
+    let snapshot = lab.scan(UpdateMode::Advisory).await;
+    let immich = only(&snapshot);
+
+    assert_eq!(immich.image, "ghcr.io/immich-app/immich-server:release");
+    assert_eq!(immich.current_version.as_deref(), Some("v1.132.0"));
+    assert_eq!(snapshot.untracked_containers, 0);
 }

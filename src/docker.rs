@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use serde::de::{Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 pub const PROJECT_LABEL: &str = "com.docker.compose.project";
 pub const SERVICE_LABEL: &str = "com.docker.compose.service";
@@ -26,13 +26,30 @@ pub enum DockerError {
     #[error("unsupported Docker host `{0}`: use unix:///path/to/docker.sock or tcp://host:port")]
     UnsupportedHost(String),
     #[error("Docker API is unreachable: {0}")]
-    Transport(#[from] reqwest::Error),
+    Transport(String),
     #[error("Docker API refused to {operation} ({status}): {message}")]
     Api {
         operation: &'static str,
         status: u16,
         message: String,
     },
+}
+
+/// reqwest reports only "error sending request"; the cause underneath (connection refused,
+/// permission denied on the socket) is what tells the user what to fix.
+impl From<reqwest::Error> for DockerError {
+    fn from(error: reqwest::Error) -> Self {
+        let mut description = error.to_string();
+        let mut cause = std::error::Error::source(&error);
+
+        while let Some(inner) = cause {
+            description.push_str(": ");
+            description.push_str(&inner.to_string());
+            cause = inner.source();
+        }
+
+        Self::Transport(description)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -57,8 +74,16 @@ struct ContainerEnvironment {
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct EnvironmentNames {
+    #[serde(default)]
+    image: String,
     #[serde(default, deserialize_with = "env_names")]
     env: BTreeSet<String>,
+}
+
+pub struct ContainerDetails {
+    /// The image reference the container was created with, which survives the tag moving.
+    pub reference: String,
+    pub environment_names: BTreeSet<String>,
 }
 
 #[derive(Deserialize)]
@@ -106,7 +131,7 @@ impl Docker {
         Ok(checked("list containers", response).await?.json().await?)
     }
 
-    pub async fn environment_names(&self, container_id: &str) -> Result<BTreeSet<String>, DockerError> {
+    pub async fn container_details(&self, container_id: &str) -> Result<ContainerDetails, DockerError> {
         let response = self
             .client
             .get(self.url(&format!("/containers/{container_id}/json")))
@@ -114,7 +139,10 @@ impl Docker {
             .send()
             .await?;
         let container: ContainerEnvironment = checked("inspect a container", response).await?.json().await?;
-        Ok(container.config.env)
+        Ok(ContainerDetails {
+            reference: container.config.image,
+            environment_names: container.config.env,
+        })
     }
 
     pub async fn image_digests(&self, image: &str) -> Result<Vec<String>, DockerError> {
@@ -173,6 +201,20 @@ impl Docker {
         Ok(checked("inspect an image", response).await?.json().await?)
     }
 
+    /// Inspects the image as one platform sees it. On engines that keep multi-platform images its
+    /// `Id` is that platform's manifest digest, which is the identity Docker Compose records.
+    pub async fn inspect_image_for(&self, image: &str, architecture: &str) -> Result<Value, DockerError> {
+        let platform = json!({ "os": "linux", "architecture": architecture }).to_string();
+        let response = self
+            .client
+            .get(self.url(&format!("/images/{image}/json")))
+            .query(&[("platform", platform)])
+            .timeout(INSPECT_TIMEOUT)
+            .send()
+            .await?;
+        Ok(checked("inspect an image", response).await?.json().await?)
+    }
+
     pub async fn create_container(&self, name: &str, spec: &Value) -> Result<String, DockerError> {
         let response = self
             .client
@@ -208,6 +250,14 @@ impl Docker {
             .post(self.url(&format!("/containers/{container_id}/rename")))
             .query(&[("name", name)]);
         self.command("rename a container", request).await
+    }
+
+    pub async fn tag(&self, image: &str, repository: &str, tag: &str) -> Result<(), DockerError> {
+        let request = self
+            .client
+            .post(self.url(&format!("/images/{image}/tag")))
+            .query(&[("repo", repository), ("tag", tag)]);
+        self.command("tag an image", request).await
     }
 
     pub async fn remove(&self, container_id: &str) -> Result<(), DockerError> {
