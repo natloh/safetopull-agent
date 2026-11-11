@@ -1,5 +1,7 @@
 //! Maps running containers onto the apps the dataset tracks.
 
+use std::collections::HashMap;
+
 use crate::docker::{ContainerSummary, PROJECT_LABEL, SERVICE_LABEL, VERSION_LABEL};
 use crate::manifest::{AppIndex, IndexedApp, IndexedImage};
 
@@ -70,6 +72,7 @@ fn canonical_registry(host: &str) -> &str {
 #[derive(Debug, Clone)]
 pub struct RunningService {
     pub container_id: String,
+    pub container_name: String,
     pub key: String,
     pub name: String,
     pub stack: Option<String>,
@@ -96,8 +99,11 @@ fn without_digest(reference: &str) -> String {
     reference.split('@').next().unwrap_or_default().to_owned()
 }
 
+/// Keys identify a service in the dashboard, in reports and in update requests, so they must be
+/// unique per host. Replicas of one compose service share a project and service name; those get
+/// their container name appended.
 pub fn running_services(containers: Vec<ContainerSummary>) -> Vec<RunningService> {
-    containers
+    let mut services: Vec<RunningService> = containers
         .into_iter()
         .map(|container| {
             let container_name = container
@@ -106,7 +112,11 @@ pub fn running_services(containers: Vec<ContainerSummary>) -> Vec<RunningService
                 .map(|name| name.trim_start_matches('/').to_owned())
                 .unwrap_or_else(|| container.id.clone());
             let stack = container.labels.get(PROJECT_LABEL).cloned();
-            let name = container.labels.get(SERVICE_LABEL).cloned().unwrap_or(container_name);
+            let name = container
+                .labels
+                .get(SERVICE_LABEL)
+                .cloned()
+                .unwrap_or_else(|| container_name.clone());
             let key = match &stack {
                 Some(stack) => format!("{stack}/{name}"),
                 None => name.clone(),
@@ -115,6 +125,7 @@ pub fn running_services(containers: Vec<ContainerSummary>) -> Vec<RunningService
 
             RunningService {
                 container_id: container.id,
+                container_name,
                 key,
                 name,
                 stack,
@@ -124,7 +135,19 @@ pub fn running_services(containers: Vec<ContainerSummary>) -> Vec<RunningService
                 labelled_version: container.labels.get(VERSION_LABEL).cloned(),
             }
         })
-        .collect()
+        .collect();
+
+    let mut occurrences: HashMap<String, usize> = HashMap::new();
+    for service in &services {
+        *occurrences.entry(service.key.clone()).or_default() += 1;
+    }
+    for service in &mut services {
+        if occurrences[&service.key] > 1 {
+            service.key = format!("{}/{}", service.key, service.container_name);
+        }
+    }
+
+    services
 }
 
 /// An exact registry and repository match wins; otherwise a repository that only one tracked app
@@ -187,6 +210,42 @@ mod tests {
         assert_eq!(image.digest.as_deref(), Some("sha256:1111"));
         assert_eq!(image.pull_name(), "ghcr.io/immich-app/immich-server");
         assert_eq!(ImageRef::parse("postgres").pull_name(), "docker.io/library/postgres");
+    }
+
+    fn container(id: &str, name: &str, stack: Option<&str>, service: Option<&str>) -> ContainerSummary {
+        let labels = [(PROJECT_LABEL, stack), (SERVICE_LABEL, service)]
+            .into_iter()
+            .filter_map(|(label, value)| Some((label.to_owned(), value?.to_owned())))
+            .collect();
+
+        ContainerSummary {
+            id: id.to_owned(),
+            names: vec![format!("/{name}")],
+            image: "nextcloud:latest".to_owned(),
+            image_id: "sha256:image".to_owned(),
+            labels,
+        }
+    }
+
+    #[test]
+    fn replicas_of_one_service_get_distinct_keys_and_other_keys_stay_short() {
+        let services = running_services(vec![
+            container("a", "cloud-app-1", Some("cloud"), Some("app")),
+            container("b", "cloud-app-2", Some("cloud"), Some("app")),
+            container("c", "cloud-db-1", Some("cloud"), Some("db")),
+            container("d", "standalone", None, None),
+        ]);
+
+        let keys: Vec<&str> = services.iter().map(|service| service.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                "cloud/app/cloud-app-1",
+                "cloud/app/cloud-app-2",
+                "cloud/db",
+                "standalone"
+            ]
+        );
     }
 
     fn index() -> AppIndex {
