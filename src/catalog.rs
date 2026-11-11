@@ -9,6 +9,9 @@ use serde::de::DeserializeOwned;
 
 use crate::manifest::{AppIndex, AppManifest};
 use crate::outbound::Outbound;
+use crate::storage::{write_atomically, Visibility};
+
+const LARGEST_DATASET_FILE: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CatalogError {
@@ -87,20 +90,20 @@ impl Catalog {
                 Some(body) => (body, Freshness::Revalidated),
                 None => return Err(unavailable(path, "HTTP 304 without a cached copy")),
             },
-            Ok(response) if response.status().is_success() => {
+            Ok(mut response) if response.status().is_success() => {
                 downloaded_etag = response
                     .headers()
                     .get(ETAG)
                     .and_then(|value| value.to_str().ok())
                     .map(str::to_owned);
-                (
-                    response
-                        .bytes()
-                        .await
-                        .map_err(|error| unavailable(path, error))?
-                        .to_vec(),
-                    Freshness::Downloaded,
-                )
+
+                match read_limited(&mut response).await {
+                    Ok(body) => (body, Freshness::Downloaded),
+                    Err(reason) => match cached_body {
+                        Some(body) => (body, Freshness::Stale),
+                        None => return Err(unavailable(path, reason)),
+                    },
+                }
             }
             Ok(response) => match cached_body {
                 Some(body) => (body, Freshness::Stale),
@@ -134,13 +137,38 @@ fn unavailable(path: &str, reason: impl ToString) -> CatalogError {
 
 /// A cache that cannot be written only costs bandwidth, so write failures are not errors.
 async fn store(body_file: &Path, etag_file: &Path, body: &[u8], etag: Option<String>) {
-    if let Some(parent) = body_file.parent() {
-        let _ = tokio::fs::create_dir_all(parent).await;
-    }
-    if tokio::fs::write(body_file, body).await.is_ok() {
+    if write_atomically(body_file, body, Visibility::Shared).await.is_ok() {
         let _ = match etag {
-            Some(etag) => tokio::fs::write(etag_file, etag).await,
+            Some(etag) => write_atomically(etag_file, etag.as_bytes(), Visibility::Shared).await,
             None => tokio::fs::remove_file(etag_file).await,
         };
     }
+}
+
+/// Dataset files are a few kilobytes. A response far beyond that is not one, and is refused
+/// before it can exhaust memory or the cache volume.
+async fn read_limited(response: &mut reqwest::Response) -> Result<Vec<u8>, String> {
+    let too_large = || {
+        format!(
+            "the response is larger than {} MiB",
+            LARGEST_DATASET_FILE / (1024 * 1024)
+        )
+    };
+
+    if response
+        .content_length()
+        .is_some_and(|length| length > LARGEST_DATASET_FILE as u64)
+    {
+        return Err(too_large());
+    }
+
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+        if body.len() + chunk.len() > LARGEST_DATASET_FILE {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    Ok(body)
 }

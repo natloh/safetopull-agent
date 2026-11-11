@@ -8,6 +8,7 @@ pub mod inventory;
 pub mod manifest;
 pub mod outbound;
 pub mod scan;
+pub mod storage;
 pub mod triage;
 pub mod update;
 pub mod version;

@@ -147,14 +147,16 @@ async fn pairing_through_the_dashboard_links_and_validates_its_input() {
     let blank = pair(json!({"code": " ", "name": "nas"})).await.unwrap();
     assert_eq!(blank.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-    let insecure = pair(json!({"code": "ABCDE-FGHJK", "name": "nas", "cloud_url": "http://example.test"}))
+    let linked = pair(json!({"code": "ABCDE-FGHJK", "name": "nas", "cloud_url": "http://127.0.0.1:9"}))
         .await
         .unwrap();
-    assert_eq!(insecure.status(), StatusCode::UNPROCESSABLE_ENTITY);
-
-    let linked = pair(json!({"code": "ABCDE-FGHJK", "name": "nas"})).await.unwrap();
     assert_eq!(linked.status(), StatusCode::OK);
-    assert_eq!(linked.json::<Value>().await.unwrap()["host_name"], "nas");
+    let link = linked.json::<Value>().await.unwrap();
+    assert_eq!(link["host_name"], "nas");
+    assert_ne!(
+        link["cloud_url"], "http://127.0.0.1:9",
+        "the account address comes from configuration only"
+    );
     assert_eq!(
         lab.cloud.reports().len(),
         1,
@@ -169,4 +171,48 @@ async fn pairing_through_the_dashboard_links_and_validates_its_input() {
         .unwrap();
     assert_eq!(unlinked.status(), StatusCode::NO_CONTENT);
     assert!(lab.cloud.unlinked());
+}
+
+#[tokio::test]
+async fn every_response_forbids_framing_and_inline_code() {
+    let lab = Lab::new();
+    let base = dashboard(&lab, &[]).await;
+
+    for path in ["/", "/app.js", "/app.css", "/api/status", "/healthz"] {
+        let response = reqwest::get(format!("{base}{path}")).await.unwrap();
+        let policy = response.headers()["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert!(
+            policy.contains("frame-ancestors 'none'") && policy.contains("script-src 'self'"),
+            "{path}"
+        );
+        assert!(!policy.contains("unsafe-inline"), "{path}");
+        assert_eq!(response.headers()["x-frame-options"], "DENY", "{path}");
+        assert_eq!(response.headers()["x-content-type-options"], "nosniff", "{path}");
+    }
+}
+
+#[tokio::test]
+async fn the_dashboard_loads_its_script_and_styles_as_separate_files() {
+    let lab = Lab::new();
+    let base = dashboard(&lab, &[]).await;
+
+    let page = reqwest::get(format!("{base}/")).await.unwrap().text().await.unwrap();
+    let script = reqwest::get(format!("{base}/app.js")).await.unwrap();
+    let styles = reqwest::get(format!("{base}/app.css")).await.unwrap();
+
+    assert!(!page.contains("<style") && !page.contains("style=") && !page.contains("<script>"));
+    assert!(script.headers()["content-type"]
+        .to_str()
+        .unwrap()
+        .starts_with("text/javascript"));
+    assert!(styles.headers()["content-type"]
+        .to_str()
+        .unwrap()
+        .starts_with("text/css"));
+    assert!(!script.text().await.unwrap().contains("window.prompt"));
 }

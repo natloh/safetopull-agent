@@ -17,7 +17,7 @@ Every other field in those responses is skipped by the parser. Environment value
 `EnvName` and non-listed labels by `allowed_labels`, both in `src/docker.rs`; the tests
 `environment_values_never_survive_parsing` and `only_allow_listed_labels_are_kept` assert it.
 
-Apply mode additionally calls `POST /images/{id}/tag`, `POST /images/create`, `GET /containers/{id}/json`,
+Apply mode additionally calls `DELETE /containers/{name}-stp-previous`, `POST /images/{id}/tag`, `POST /images/create`, `GET /containers/{id}/json`,
 `GET /images/{name}/json`, `POST /containers/create`, `POST /containers/{id}/stop|start|rename` and
 `DELETE /containers/{id}` ([`src/update.rs`](../src/update.rs)). The container's own configuration,
 including its environment, is passed from the inspect response to the create request on the same
@@ -36,7 +36,7 @@ Under `STP_DATA_DIR`:
 
 - `dataset/v1/**` : cached dataset files and their ETags.
 - `cloud-link.json` : only when linked. Contains the account address, host id, the name you gave
-  the host and its token (mode `0600`).
+  the host and its token. It is created with mode `0600` and replaced atomically.
 
 ## Outbound requests
 
@@ -47,13 +47,15 @@ records each request. The dashboard shows that record under **Network activity**
 | --- | --- | --- |
 | Every scan | `GET {STP_DATASET_URL}/v1/index.json` | none |
 | Every scan, per tracked app that runs | `GET {STP_DATASET_URL}/v1/apps/{slug}.json` | none |
-| When you pair | `POST {cloud}/api/agent/v1/pair` | pairing code, host name, agent version |
+| When you pair | `POST {STP_CLOUD_URL}/api/agent/v1/pair` | pairing code, host name, agent version |
 | Linked: after every scan | `POST {cloud}/api/agent/v1/report` | the report below |
 | Linked: after a requested update | `POST {cloud}/api/agent/v1/commands/{id}/result` | outcome and a message |
 | When you unlink | `DELETE {cloud}/api/agent/v1/link` | none |
 
 An agent that was never paired makes only the two `GET` requests. The token is sent only over
-HTTPS, or to `localhost` for development.
+HTTPS, or to `localhost` for development, and the account address comes from `STP_CLOUD_URL` alone.
+Redirects are followed at most five times and never from `https` to an unencrypted address. A
+dataset response larger than 8 MiB is refused.
 
 ## The report
 

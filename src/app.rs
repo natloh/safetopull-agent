@@ -91,6 +91,10 @@ impl App {
 
     pub async fn scan(&self) {
         let _one_at_a_time = self.scanning.lock().await;
+        self.scan_while_locked().await;
+    }
+
+    async fn scan_while_locked(&self) {
         let snapshot = self.scanner.scan().await;
         *self.snapshot.write().await = snapshot;
     }
@@ -111,7 +115,10 @@ impl App {
             return Err(UpdateError::Disabled);
         }
 
+        // Scans are held off for the whole update: one taken while the container is stopped would
+        // show the service as gone, on the dashboard and in the report to a linked account.
         let _one_at_a_time = self.updating.lock().await;
+        let _no_scans = self.scanning.lock().await;
         let service = self
             .snapshot
             .read()
@@ -123,7 +130,7 @@ impl App {
             .ok_or_else(|| UpdateError::UnknownService(key.to_owned()))?;
 
         let result = self.updater.update(&service, acknowledged, expected_target).await;
-        self.scan().await;
+        self.scan_while_locked().await;
         result
     }
 

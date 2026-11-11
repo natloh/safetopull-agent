@@ -20,6 +20,7 @@ pub const READ_LABELS: [&str; 3] = [PROJECT_LABEL, SERVICE_LABEL, VERSION_LABEL]
 const INSPECT_TIMEOUT: Duration = Duration::from_secs(15);
 const PULL_TIMEOUT: Duration = Duration::from_secs(1800);
 const STOP_TIMEOUT: Duration = Duration::from_secs(120);
+const LONGEST_PROGRESS_LINE: usize = 64 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DockerError {
@@ -164,21 +165,21 @@ impl Docker {
             .timeout(PULL_TIMEOUT)
             .send()
             .await?;
-        let progress = checked("pull an image", response).await?.text().await?;
+        let mut progress = checked("pull an image", response).await?;
+        let mut line = Vec::new();
 
-        let failure = progress
-            .lines()
-            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-            .find_map(|event| event.get("error").and_then(Value::as_str).map(str::to_owned));
-
-        match failure {
-            Some(message) => Err(DockerError::Api {
-                operation: "pull an image",
-                status: 200,
-                message,
-            }),
-            None => Ok(()),
+        while let Some(chunk) = progress.chunk().await? {
+            for byte in chunk {
+                if byte == b'\n' {
+                    pull_failure(&line)?;
+                    line.clear();
+                } else if line.len() < LONGEST_PROGRESS_LINE {
+                    line.push(byte);
+                }
+            }
         }
+
+        pull_failure(&line)
     }
 
     pub async fn inspect_container(&self, container_id: &str) -> Result<Value, DockerError> {
@@ -276,6 +277,22 @@ impl Docker {
 
     fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base)
+    }
+}
+
+/// Docker reports a failed pull as an `error` line inside a successful response.
+fn pull_failure(progress_line: &[u8]) -> Result<(), DockerError> {
+    let message = serde_json::from_slice::<Value>(progress_line)
+        .ok()
+        .and_then(|event| event.get("error").and_then(Value::as_str).map(str::to_owned));
+
+    match message {
+        Some(message) => Err(DockerError::Api {
+            operation: "pull an image",
+            status: 200,
+            message,
+        }),
+        None => Ok(()),
     }
 }
 

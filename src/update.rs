@@ -14,6 +14,18 @@ use crate::version::Version;
 const PREVIOUS_SUFFIX: &str = "-stp-previous";
 const COMPOSE_IMAGE_LABEL: &str = "com.docker.compose.image";
 
+/// Settings a container inherits from its image. One that still equals the old image's value was
+/// never changed by the user, so it is left out and the new image supplies its own.
+const INHERITED_WHEN_UNCHANGED: [&str; 7] = [
+    "Cmd",
+    "Entrypoint",
+    "WorkingDir",
+    "User",
+    "Healthcheck",
+    "StopSignal",
+    "Shell",
+];
+
 pub const PREVIOUS_IMAGE_GONE: &str = "The image this container was created from is no longer on this host, so the agent cannot rebuild it safely. Recreate it yourself, for example with docker compose up -d.";
 
 #[derive(Debug, thiserror::Error)]
@@ -28,8 +40,10 @@ pub enum UpdateError {
     NeedsAcknowledgement,
     #[error("the pulled image is {found}, not the checked {expected}; nothing was changed")]
     UnexpectedVersion { expected: String, found: String },
-    #[error("the new container failed and the previous one was restored: {0}")]
+    #[error("the update failed and the previous container was restored: {0}")]
     RolledBack(String),
+    #[error("the update failed ({cause}) and the previous container could not be fully restored: {problem}")]
+    RestoreFailed { cause: String, problem: String },
     #[error(transparent)]
     Docker(#[from] DockerError),
     #[error(transparent)]
@@ -156,6 +170,8 @@ impl Updater {
         }
     }
 
+    /// Replaces the container, and puts the original back under its own name, running, if any
+    /// step after stopping it fails.
     async fn swap(&self, container: &Value, spec: &Value) -> Result<(), UpdateError> {
         let container_id = container["Id"].as_str().unwrap_or_default();
         let name = container["Name"]
@@ -163,12 +179,20 @@ impl Updater {
             .unwrap_or_default()
             .trim_start_matches('/')
             .to_owned();
-        self.docker.stop(container_id).await?;
-        self.docker
-            .rename(container_id, &format!("{name}{PREVIOUS_SUFFIX}"))
-            .await?;
+        let parked = format!("{name}{PREVIOUS_SUFFIX}");
 
-        let started = match self.docker.create_container(&name, spec).await {
+        // A stopped leftover from an earlier update would make the rename below fail. Docker does
+        // not remove a running container without `force`, so this cannot take anything live down.
+        let _ = self.docker.remove(&parked).await;
+
+        if let Err(error) = self.docker.stop(container_id).await {
+            return Err(self.restore(container_id, None, error).await);
+        }
+        if let Err(error) = self.docker.rename(container_id, &parked).await {
+            return Err(self.restore(container_id, None, error).await);
+        }
+
+        let replaced = match self.docker.create_container(&name, spec).await {
             Ok(replacement) => match self.docker.start(&replacement).await {
                 Ok(()) => Ok(()),
                 Err(error) => {
@@ -179,16 +203,31 @@ impl Updater {
             Err(error) => Err(error),
         };
 
-        match started {
+        match replaced {
             Ok(()) => {
-                self.docker.remove(container_id).await?;
+                // The replacement is running, so failing to clear the parked original is not a
+                // failed update. It is cleared at the start of the next one.
+                let _ = self.docker.remove(container_id).await;
                 Ok(())
             }
-            Err(error) => {
-                self.docker.rename(container_id, &name).await?;
-                self.docker.start(container_id).await?;
-                Err(UpdateError::RolledBack(error.to_string()))
-            }
+            Err(error) => Err(self.restore(container_id, Some(&name), error).await),
+        }
+    }
+
+    /// Attempts every restore step even if one fails, and reports honestly when it did not work.
+    async fn restore(&self, container_id: &str, original_name: Option<&str>, cause: DockerError) -> UpdateError {
+        let renamed = match original_name {
+            Some(name) => self.docker.rename(container_id, name).await.err(),
+            None => None,
+        };
+        let started = self.docker.start(container_id).await.err();
+
+        match renamed.or(started) {
+            None => UpdateError::RolledBack(cause.to_string()),
+            Some(problem) => UpdateError::RestoreFailed {
+                cause: cause.to_string(),
+                problem: problem.to_string(),
+            },
         }
     }
 }
@@ -214,11 +253,17 @@ pub fn replacement_spec(container: &Value, previous_image: &Value, pulled_image:
         }
     }
 
-    for field in ["Cmd", "Entrypoint", "WorkingDir", "User"] {
+    for field in INHERITED_WHEN_UNCHANGED {
         if spec.get(field) == Some(&defaults[field]) {
             spec.remove(field);
         }
     }
+
+    let published = container["HostConfig"]["PortBindings"].as_object();
+    drop_inherited_keys(&mut spec, "ExposedPorts", &defaults["ExposedPorts"], |port| {
+        published.is_some_and(|bindings| bindings.contains_key(port))
+    });
+    drop_inherited_keys(&mut spec, "Volumes", &defaults["Volumes"], |_| false);
 
     let short_id = spec
         .get("Hostname")
@@ -236,7 +281,7 @@ pub fn replacement_spec(container: &Value, previous_image: &Value, pulled_image:
     }
 
     spec.insert("Image".to_owned(), json!(reference));
-    spec.insert("HostConfig".to_owned(), container["HostConfig"].clone());
+    spec.insert("HostConfig".to_owned(), host_config_keeping_volumes(container));
 
     if !shares_network_namespace {
         spec.insert(
@@ -246,6 +291,65 @@ pub fn replacement_spec(container: &Value, previous_image: &Value, pulled_image:
     }
 
     Value::Object(spec)
+}
+
+/// Removes the entries of a map-valued setting that the old image declared, so the new image's
+/// declarations apply, while keeping the ones the user added or still relies on.
+fn drop_inherited_keys(
+    spec: &mut Map<String, Value>,
+    field: &str,
+    inherited: &Value,
+    still_needed: impl Fn(&str) -> bool,
+) {
+    let Some(entries) = spec.get_mut(field).and_then(Value::as_object_mut) else {
+        return;
+    };
+
+    entries.retain(|key, _| still_needed(key) || inherited.get(key).is_none());
+
+    if entries.is_empty() {
+        spec.remove(field);
+    }
+}
+
+/// Anonymous volumes are attached by name, so the replacement keeps the data of volumes that the
+/// image declares or that were created with `-v /path`, as `docker compose` does on recreate.
+fn host_config_keeping_volumes(container: &Value) -> Value {
+    let mut host_config = container["HostConfig"].clone();
+    let configured: Vec<String> = host_config["Binds"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|bind| bind.as_str()?.split(':').nth(1).map(str::to_owned))
+        .chain(
+            host_config["Mounts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|mount| mount["Target"].as_str().map(str::to_owned)),
+        )
+        .collect();
+
+    let kept: Vec<Value> = container["Mounts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|mount| mount["Type"] == "volume")
+        .filter_map(|mount| {
+            let (volume, destination) = (mount["Name"].as_str()?, mount["Destination"].as_str()?);
+            let mode = if mount["RW"] == false { ":ro" } else { "" };
+            (!configured.iter().any(|target| target == destination))
+                .then(|| json!(format!("{volume}:{destination}{mode}")))
+        })
+        .collect();
+
+    if !kept.is_empty() {
+        let mut binds = host_config["Binds"].as_array().cloned().unwrap_or_default();
+        binds.extend(kept);
+        host_config["Binds"] = Value::Array(binds);
+    }
+
+    host_config
 }
 
 fn endpoints(container: &Value, short_id: &str) -> Map<String, Value> {

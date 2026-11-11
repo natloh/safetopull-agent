@@ -97,7 +97,7 @@ pub struct DockerState {
     pub images: HashMap<String, Value>,
     pub calls: Vec<String>,
     pub created: Vec<Value>,
-    pub failing_starts: Vec<String>,
+    pub failures: Vec<String>,
 }
 
 #[derive(Clone, Default)]
@@ -145,9 +145,21 @@ impl FakeDocker {
                     "Entrypoint": ["tini", "--"],
                     "WorkingDir": "/usr/src/app",
                     "User": "",
+                    "Healthcheck": {"Test": ["CMD", "old-check"]},
+                    "StopSignal": "SIGTERM",
+                    "ExposedPorts": {"2283/tcp": {}, "9000/tcp": {}},
+                    "Volumes": {"/cache": {}},
                     "Labels": labels,
                 },
-                "HostConfig": {"Binds": ["/srv/data:/data"], "RestartPolicy": {"Name": "unless-stopped"}},
+                "HostConfig": {
+                    "Binds": ["/srv/data:/data"],
+                    "PortBindings": {"9000/tcp": [{"HostPort": "9000"}]},
+                    "RestartPolicy": {"Name": "unless-stopped"},
+                },
+                "Mounts": [
+                    {"Type": "bind", "Source": "/srv/data", "Destination": "/data", "RW": true},
+                    {"Type": "volume", "Name": "anonymous0123", "Destination": "/cache", "RW": true},
+                ],
                 "NetworkSettings": {"Networks": {"media_default": {"Aliases": [container.name], "IPAddress": "172.18.0.2"}}},
             }),
         );
@@ -162,6 +174,10 @@ impl FakeDocker {
                     "Entrypoint": ["tini", "--"],
                     "WorkingDir": "/usr/src/app",
                     "User": "",
+                    "Healthcheck": {"Test": ["CMD", "old-check"]},
+                    "StopSignal": "SIGTERM",
+                    "ExposedPorts": {"2283/tcp": {}},
+                    "Volumes": {"/cache": {}},
                     "Labels": {"maintainer": "someone@example.test"},
                 },
             }),
@@ -187,7 +203,12 @@ impl FakeDocker {
     }
 
     pub fn fail_start_of(&self, container_id: &str) {
-        self.0.lock().unwrap().failing_starts.push(container_id.to_owned());
+        self.fail(&format!("start {container_id}"));
+    }
+
+    /// Makes the engine answer 500 to one call, written as it appears in `calls()`.
+    pub fn fail(&self, call: &str) {
+        self.0.lock().unwrap().failures.push(call.to_owned());
     }
 
     pub fn calls(&self) -> Vec<String> {
@@ -213,6 +234,16 @@ impl FakeDocker {
     }
 }
 
+fn refused(state: &DockerState, call: &str) -> Option<Response> {
+    state.failures.iter().any(|failing| failing == call).then(|| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"message": format!("engine refused to {call}")})),
+        )
+            .into_response()
+    })
+}
+
 async fn list_containers(State(docker): State<FakeDocker>) -> Json<Value> {
     let mut state = docker.0.lock().unwrap();
     state.calls.push("list".to_owned());
@@ -221,7 +252,12 @@ async fn list_containers(State(docker): State<FakeDocker>) -> Json<Value> {
 
 async fn inspect_container(State(docker): State<FakeDocker>, Path(id): Path<String>) -> Response {
     let mut state = docker.0.lock().unwrap();
-    state.calls.push(format!("inspect {id}"));
+    let call = format!("inspect {id}");
+    state.calls.push(call.clone());
+
+    if let Some(refusal) = refused(&state, &call) {
+        return refusal;
+    }
     match state.inspections.get(&id) {
         Some(inspection) => Json(inspection.clone()).into_response(),
         None => (
@@ -290,21 +326,18 @@ async fn container_action(
 ) -> Response {
     let mut state = docker.0.lock().unwrap();
     let detail = query.get("name").map(|name| format!(" {name}")).unwrap_or_default();
-    state.calls.push(format!("{action} {id}{detail}"));
+    let call = format!("{action} {id}{detail}");
+    state.calls.push(call.clone());
 
-    if action == "start" && state.failing_starts.contains(&id) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"message": "port is already allocated"})),
-        )
-            .into_response();
-    }
-    StatusCode::NO_CONTENT.into_response()
+    refused(&state, &call).unwrap_or_else(|| StatusCode::NO_CONTENT.into_response())
 }
 
-async fn remove_container(State(docker): State<FakeDocker>, Path(id): Path<String>) -> StatusCode {
-    docker.0.lock().unwrap().calls.push(format!("remove {id}"));
-    StatusCode::NO_CONTENT
+async fn remove_container(State(docker): State<FakeDocker>, Path(id): Path<String>) -> Response {
+    let mut state = docker.0.lock().unwrap();
+    let call = format!("remove {id}");
+    state.calls.push(call.clone());
+
+    refused(&state, &call).unwrap_or_else(|| StatusCode::NO_CONTENT.into_response())
 }
 
 pub const PAIRING_CODE: &str = "ABCDE-FGHJK";

@@ -130,15 +130,16 @@ pub fn assess(manifest: &AppManifest, from: Version, target: &Release, observed:
         }
 
         for rule in &release.rules {
+            if !applies(&rule.condition, observed) {
+                continue;
+            }
             if let Action::RequireSteppingStone { minimum_prior_version } = &rule.action {
                 add_stone(minimum_prior_version);
                 if Version::parse(minimum_prior_version).is_some_and(|stone| stone <= from) {
                     continue;
                 }
             }
-            if applies(&rule.condition, observed) {
-                findings.push(finding(release, rule));
-            }
+            findings.push(finding(release, rule));
         }
     }
 
@@ -509,6 +510,31 @@ mod tests {
         let stepwise = Host::modern().assess(&nextcloud, "v29.0.0", "v30.0.0");
         assert_eq!(stepwise.verdict, Verdict::Yellow);
         assert!(stepwise.findings.is_empty());
+    }
+
+    #[test]
+    fn a_conditional_stepping_stone_is_ignored_when_its_condition_does_not_apply() {
+        let mut manifest = manifest("nextcloud");
+        let v30 = manifest
+            .releases
+            .iter_mut()
+            .find(|release| release.version == "v30.0.0")
+            .unwrap();
+        v30.minimum_prior_version = None;
+        v30.rules[0].condition = Condition::EnvKeyPresent {
+            key: "ONLY_CUSTOM_AUTH".to_owned(),
+        };
+
+        let unaffected = Host::modern().assess(&manifest, "v28.0.0", "v30.0.0");
+        assert!(unaffected.stepping_stones.is_empty());
+        assert!(!slugs(&unaffected).contains(&"nextcloud-v30-stepping-stone"));
+
+        let mut affected = Host::modern();
+        affected.env_keys.insert("ONLY_CUSTOM_AUTH".to_owned());
+        assert_eq!(
+            affected.assess(&manifest, "v28.0.0", "v30.0.0").stepping_stones,
+            ["v29.0.0"]
+        );
     }
 
     #[test]

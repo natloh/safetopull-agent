@@ -5,10 +5,12 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use reqwest::redirect::Policy;
 use reqwest::{RequestBuilder, Response};
 use serde::Serialize;
 
 const KEPT_RECORDS: usize = 50;
+const MOST_REDIRECTS: usize = 5;
 
 pub fn now() -> u64 {
     SystemTime::now()
@@ -36,6 +38,18 @@ impl Outbound {
         let client = reqwest::Client::builder()
             .user_agent(concat!("stp-agent/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(30))
+            .redirect(Policy::custom(|attempt| {
+                let left_tls = attempt.previous().last().is_some_and(|from| from.scheme() == "https")
+                    && attempt.url().scheme() != "https";
+
+                if left_tls {
+                    attempt.error("refusing a redirect from https to an unencrypted address")
+                } else if attempt.previous().len() > MOST_REDIRECTS {
+                    attempt.error("too many redirects")
+                } else {
+                    attempt.follow()
+                }
+            }))
             .build()?;
 
         Ok(Self {

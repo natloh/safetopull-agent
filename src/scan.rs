@@ -84,6 +84,7 @@ impl Scanner {
 
         let mut manifests: HashMap<String, Result<AppManifest, String>> = HashMap::new();
         let mut environments: HashMap<String, BTreeSet<String>> = HashMap::new();
+        let mut images: HashMap<String, (Vec<String>, bool)> = HashMap::new();
 
         for service in running.iter_mut().filter(|service| service.is_listed_by_image_id()) {
             if let Ok(details) = self.docker.container_details(&service.container_id).await {
@@ -118,19 +119,28 @@ impl Scanner {
                         || (service.stack.is_some() && other.stack == service.stack)
                 })
                 .collect();
-
+            let mut status = ServiceStatus::unassessed(service, &app.slug, &app.name);
             let mut env_keys = BTreeSet::new();
+            let mut unreadable = None;
+
             for member in &stack {
                 if !environments.contains_key(&member.container_id) {
-                    let names = self
-                        .docker
-                        .container_details(&member.container_id)
-                        .await
-                        .map(|details| details.environment_names)
-                        .unwrap_or_default();
-                    environments.insert(member.container_id.clone(), names);
+                    match self.docker.container_details(&member.container_id).await {
+                        Ok(details) => environments.insert(member.container_id.clone(), details.environment_names),
+                        Err(error) => {
+                            unreadable = Some(error);
+                            break;
+                        }
+                    };
                 }
                 env_keys.extend(environments[&member.container_id].iter().cloned());
+            }
+
+            if let Some(error) = unreadable {
+                status.headline = "Could not be checked".to_owned();
+                status.summary = format!("Its configuration could not be read, so no rule could be ruled out: {error}");
+                snapshot.services.push(status);
+                continue;
             }
 
             let companions: Vec<Companion> = stack
@@ -142,14 +152,15 @@ impl Scanner {
                 })
                 .collect();
 
-            let mut status = ServiceStatus::unassessed(service, &app.slug, &app.name);
-
             match &manifests[&app.slug] {
                 Err(error) => status.summary = error.clone(),
                 Ok(manifest) => {
-                    let inspected = self.docker.image_digests(&service.image_id).await;
-                    let image_gone = matches!(inspected, Err(DockerError::Api { status: 404, .. }));
-                    let digests = inspected.unwrap_or_default();
+                    if !images.contains_key(&service.image_id) {
+                        let inspected = self.docker.image_digests(&service.image_id).await;
+                        let gone = matches!(inspected, Err(DockerError::Api { status: 404, .. }));
+                        images.insert(service.image_id.clone(), (inspected.unwrap_or_default(), gone));
+                    }
+                    let (digests, image_gone) = &images[&service.image_id];
                     let observed = Observed {
                         env_keys: &env_keys,
                         companions: &companions,
@@ -157,9 +168,9 @@ impl Scanner {
                         cpu_flags: self.host.cpu_flags.as_ref(),
                         variant: &indexed.variant,
                     };
-                    self.assess(&mut status, manifest, indexed, service, &digests, &observed);
+                    self.assess(&mut status, manifest, indexed, service, digests, &observed);
 
-                    if image_gone && status.can_update {
+                    if *image_gone && status.can_update {
                         status.can_update = false;
                         status.update_note = Some(PREVIOUS_IMAGE_GONE.to_owned());
                     }
@@ -224,13 +235,18 @@ impl Scanner {
         }
 
         let tag = service.image.tag_or_latest();
-        let rolling = indexed.rolling_tags.iter().any(|rolling| rolling == tag) || Version::parse(tag).is_none();
+        let digest_pinned = service.image.digest.is_some();
+        let rolling = !digest_pinned && is_rolling(indexed, tag);
         let updatable = matches!(assessment.verdict, Verdict::Green | Verdict::Yellow);
 
         status.can_update = self.update_mode == UpdateMode::Apply && updatable && rolling && stone.is_none();
         status.update_note = match (updatable, rolling, stone.is_some()) {
             (false, _, _) => None,
             (true, _, true) => Some(format!("Set the image tag to {} to take this step.", target.version)),
+            (true, false, false) if digest_pinned => Some(format!(
+                "Pinned by digest: change the image reference to {} and recreate the service.",
+                target.version
+            )),
             (true, false, false) => Some(format!(
                 "Pinned to {tag}: set the image tag to {} and recreate the service.",
                 target.version
@@ -244,6 +260,15 @@ impl Scanner {
         status.summary = assessment.summary.clone();
         status.assessment = Some(assessment);
     }
+}
+
+/// A tag moves only if the dataset lists it as rolling or it is `latest`. Where the dataset lists
+/// none for an image, any tag that is not a version is assumed to move; an unlisted tag such as
+/// `sha-a1b2c3d` is otherwise treated as a pin.
+fn is_rolling(indexed: &IndexedImage, tag: &str) -> bool {
+    indexed.rolling_tags.iter().any(|rolling| rolling == tag)
+        || tag == "latest"
+        || (indexed.rolling_tags.is_empty() && Version::parse(tag).is_none())
 }
 
 /// Digest first, because a tag only says what was asked for, not what is running. The image ID is

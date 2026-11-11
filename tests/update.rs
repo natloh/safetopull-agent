@@ -51,14 +51,31 @@ async fn recreates_the_container_from_its_own_settings_minus_the_old_image_defau
     let spec = &lab.docker.created()[0];
     assert_eq!(spec["Image"], "docker.io/library/nextcloud:latest");
     assert_eq!(spec["Env"], json!(["NEXTCLOUD_ADMIN_PASSWORD=hunter2"]));
-    assert_eq!(spec["HostConfig"]["Binds"], json!(["/srv/data:/data"]));
+    assert_eq!(
+        spec["HostConfig"]["Binds"],
+        json!(["/srv/data:/data", "anonymous0123:/cache"])
+    );
+    assert_eq!(
+        spec["ExposedPorts"],
+        json!({"9000/tcp": {}}),
+        "a published port stays, the image's own are dropped"
+    );
     assert_eq!(spec["Labels"]["com.docker.compose.service"], "nextcloud");
     assert_eq!(spec["Labels"]["com.docker.compose.image"], "sha256:new");
     assert_eq!(
         spec["NetworkingConfig"]["EndpointsConfig"]["media_default"],
         json!({"Aliases": ["nextcloud"]})
     );
-    for inherited in ["Cmd", "Entrypoint", "WorkingDir", "User", "Hostname"] {
+    for inherited in [
+        "Cmd",
+        "Entrypoint",
+        "WorkingDir",
+        "User",
+        "Hostname",
+        "Healthcheck",
+        "StopSignal",
+        "Volumes",
+    ] {
         assert!(
             spec.get(inherited).is_none(),
             "{inherited} must come from the new image"
@@ -180,4 +197,80 @@ async fn refuses_before_pulling_when_the_image_the_container_came_from_is_gone()
         .calls()
         .iter()
         .any(|call| call.starts_with("pull") || call.starts_with("stop")));
+}
+
+#[tokio::test]
+async fn clears_a_leftover_parked_container_before_stopping_the_running_one() {
+    let lab = Lab::new();
+    lab.run_nextcloud_29();
+    lab.publish_nextcloud_latest("sha256:nextcloud30index");
+    let (app, _) = lab.app(&APPLY).await;
+
+    app.update("cloud/nextcloud", true, None).await.unwrap();
+
+    let calls = lab.docker.calls();
+    assert!(position(&calls, "remove nextcloud-stp-previous") < position(&calls, "stop nc1"));
+}
+
+#[tokio::test]
+async fn starts_the_running_container_again_when_it_cannot_be_parked() {
+    let lab = Lab::new();
+    lab.run_nextcloud_29();
+    lab.publish_nextcloud_latest("sha256:nextcloud30index");
+    lab.docker.fail("rename nc1 nextcloud-stp-previous");
+    let (app, _) = lab.app(&APPLY).await;
+
+    let error = app.update("cloud/nextcloud", true, None).await.unwrap_err();
+
+    assert!(matches!(error, UpdateError::RolledBack(_)), "{error}");
+    let calls = lab.docker.calls();
+    assert!(position(&calls, "stop nc1") < position(&calls, "start nc1"));
+    assert!(!calls.iter().any(|call| call.starts_with("create")));
+}
+
+#[tokio::test]
+async fn a_replaced_container_that_cannot_be_cleared_does_not_undo_a_successful_update() {
+    let lab = Lab::new();
+    lab.run_nextcloud_29();
+    lab.publish_nextcloud_latest("sha256:nextcloud30index");
+    lab.docker.fail("remove nc1");
+    let (app, _) = lab.app(&APPLY).await;
+
+    assert_eq!(app.update("cloud/nextcloud", true, None).await.unwrap(), "v30.0.0");
+
+    let calls = lab.docker.calls();
+    assert!(calls.contains(&"start new-container".to_owned()));
+    assert!(!calls
+        .iter()
+        .any(|call| call.ends_with("docker.io/library/nextcloud:latest") && call.starts_with("tag docker.io")));
+}
+
+#[tokio::test]
+async fn says_so_when_the_previous_container_could_not_be_restored() {
+    let lab = Lab::new();
+    lab.run_nextcloud_29();
+    lab.publish_nextcloud_latest("sha256:nextcloud30index");
+    lab.docker.fail_start_of("new-container");
+    lab.docker.fail("rename nc1 nextcloud");
+    let (app, _) = lab.app(&APPLY).await;
+
+    let error = app.update("cloud/nextcloud", true, None).await.unwrap_err();
+
+    assert!(matches!(error, UpdateError::RestoreFailed { .. }), "{error}");
+    assert!(
+        lab.docker.calls().contains(&"start nc1".to_owned()),
+        "every restore step is still attempted"
+    );
+}
+
+#[tokio::test]
+async fn reports_a_pull_that_docker_rejected_inside_its_progress_stream() {
+    let lab = Lab::new();
+    lab.run_nextcloud_29();
+    let (app, _) = lab.app(&APPLY).await;
+
+    let error = app.update("cloud/nextcloud", true, None).await.unwrap_err();
+
+    assert!(error.to_string().contains("manifest unknown"), "{error}");
+    assert!(!lab.docker.calls().iter().any(|call| call.starts_with("stop")));
 }

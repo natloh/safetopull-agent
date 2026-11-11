@@ -302,3 +302,100 @@ async fn recognises_a_container_that_docker_lists_by_image_id_after_its_tag_move
     assert_eq!(immich.current_version.as_deref(), Some("v1.132.0"));
     assert_eq!(snapshot.untracked_containers, 0);
 }
+
+fn run_nextcloud(lab: &Lab, id: &str, image: &str, repo_digests: &[&str]) {
+    lab.docker.run(FakeContainer {
+        id,
+        name: id,
+        image,
+        image_id: "sha256:ncimage",
+        stack: None,
+        env: &[],
+        repo_digests,
+    });
+}
+
+#[tokio::test]
+async fn a_digest_pinned_container_is_never_treated_as_a_rolling_tag() {
+    let lab = Lab::new();
+    run_nextcloud(&lab, "nc1", "nextcloud:latest@sha256:nextcloud29index", &[]);
+
+    let snapshot = lab.scan(UpdateMode::Apply).await;
+    let nextcloud = only(&snapshot);
+
+    assert_eq!(nextcloud.target_version.as_deref(), Some("v30.0.0"));
+    assert!(!nextcloud.can_update);
+    assert!(nextcloud
+        .update_note
+        .as_deref()
+        .unwrap()
+        .starts_with("Pinned by digest"));
+}
+
+#[tokio::test]
+async fn a_tag_the_dataset_does_not_list_as_rolling_is_treated_as_a_pin() {
+    let lab = Lab::new();
+    run_nextcloud(
+        &lab,
+        "nc1",
+        "nextcloud:sha-a1b2c3d",
+        &["nextcloud@sha256:nextcloud29index"],
+    );
+
+    let snapshot = lab.scan(UpdateMode::Apply).await;
+
+    assert!(!only(&snapshot).can_update);
+    assert!(only(&snapshot)
+        .update_note
+        .as_deref()
+        .unwrap()
+        .starts_with("Pinned to sha-a1b2c3d"));
+}
+
+#[tokio::test]
+async fn a_service_whose_configuration_cannot_be_read_gets_no_verdict() {
+    let lab = Lab::new();
+    lab.run_immich("ghcr.io/immich-app/immich-server:v1.133.0", &[], &["DB_HOSTNAME=db"]);
+    lab.docker.fail("inspect immich1");
+
+    let snapshot = lab.scan(UpdateMode::Apply).await;
+    let immich = only(&snapshot);
+
+    assert_eq!(immich.verdict, Verdict::Unknown);
+    assert_eq!(immich.headline, "Could not be checked");
+    assert!(!immich.can_update);
+}
+
+#[tokio::test]
+async fn inspects_an_image_once_however_many_containers_run_it() {
+    let lab = Lab::new();
+    run_nextcloud(&lab, "nc1", "nextcloud:latest", &["nextcloud@sha256:nextcloud29index"]);
+    run_nextcloud(&lab, "nc2", "nextcloud:latest", &["nextcloud@sha256:nextcloud29index"]);
+
+    let snapshot = lab.scan(UpdateMode::Advisory).await;
+
+    assert_eq!(snapshot.services.len(), 2);
+    let inspections = lab
+        .docker
+        .calls()
+        .iter()
+        .filter(|call| *call == "image sha256:ncimage")
+        .count();
+    assert_eq!(inspections, 1);
+}
+
+#[tokio::test]
+async fn refuses_a_dataset_file_far_larger_than_any_real_one() {
+    let lab = Lab::new();
+    let catalog = lab.catalog().await;
+    catalog.manifest("immich").await.unwrap();
+
+    lab.dataset.put("v1/apps/immich.json", &" ".repeat(9 * 1024 * 1024));
+    assert_eq!(catalog.manifest("immich").await.unwrap().freshness, Freshness::Stale);
+
+    lab.dataset.put("v1/apps/nextcloud.json", &" ".repeat(9 * 1024 * 1024));
+    assert!(matches!(
+        catalog.manifest("nextcloud").await,
+        Err(CatalogError::Unavailable { .. })
+    ));
+}

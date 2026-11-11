@@ -14,6 +14,7 @@ use crate::config::{Config, UpdateMode};
 use crate::host::HostFacts;
 use crate::outbound::Outbound;
 use crate::scan::Snapshot;
+use crate::storage::{write_atomically, Visibility};
 use crate::triage::Verdict;
 
 const API: &str = "/api/agent/v1";
@@ -149,10 +150,16 @@ pub struct Cloud {
 impl Cloud {
     pub async fn load(outbound: Outbound, data_dir: impl Into<PathBuf>) -> Self {
         let link_file = data_dir.into().join(LINK_FILE);
-        let link = tokio::fs::read(&link_file)
-            .await
-            .ok()
-            .and_then(|stored| serde_json::from_slice(&stored).ok());
+        let link = match tokio::fs::read(&link_file).await {
+            Ok(stored) => serde_json::from_slice(&stored)
+                .inspect_err(|error| eprintln!("stp-agent: ignoring unreadable {}: {error}", link_file.display()))
+                .ok(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                eprintln!("stp-agent: could not read {}: {error}", link_file.display());
+                None
+            }
+        };
 
         Self {
             outbound,
@@ -252,18 +259,9 @@ impl Cloud {
     }
 
     async fn store(&self, link: &Link) -> Result<(), CloudError> {
-        if let Some(parent) = self.link_file.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        tokio::fs::write(&self.link_file, serde_json::to_vec(link).expect("a link serialises")).await?;
+        let stored = serde_json::to_vec(link).expect("a link serialises");
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            tokio::fs::set_permissions(&self.link_file, std::fs::Permissions::from_mode(0o600)).await?;
-        }
-
-        Ok(())
+        Ok(write_atomically(&self.link_file, &stored, Visibility::Private).await?)
     }
 
     async fn forget(&self) -> Result<(), CloudError> {

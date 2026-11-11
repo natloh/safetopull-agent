@@ -1,3 +1,4 @@
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -75,7 +76,7 @@ fn fail(error: &dyn std::fmt::Display) -> ExitCode {
 }
 
 async fn healthcheck(config: &Config) -> ExitCode {
-    let url = format!("http://127.0.0.1:{}/healthz", config.listen.port());
+    let url = format!("http://{}/healthz", reachable(config.listen));
     let healthy = match reqwest::Client::builder().timeout(Duration::from_secs(5)).build() {
         Ok(client) => client
             .get(url)
@@ -90,6 +91,18 @@ async fn healthcheck(config: &Config) -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
+}
+
+/// The address to probe for a listener: the configured one, or loopback of the same family when
+/// it listens on every interface.
+fn reachable(listen: SocketAddr) -> SocketAddr {
+    let ip = match listen.ip() {
+        IpAddr::V4(ip) if ip.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        configured => configured,
+    };
+
+    SocketAddr::new(ip, listen.port())
 }
 
 async fn shutdown() {
@@ -107,4 +120,19 @@ async fn shutdown() {
 
     #[cfg(not(unix))]
     let _ = interrupt.await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reachable;
+
+    #[test]
+    fn probes_loopback_for_wildcard_listeners_and_the_configured_address_otherwise() {
+        let probed = |listen: &str| reachable(listen.parse().unwrap()).to_string();
+
+        assert_eq!(probed("0.0.0.0:8484"), "127.0.0.1:8484");
+        assert_eq!(probed("[::]:8484"), "[::1]:8484");
+        assert_eq!(probed("[::1]:9000"), "[::1]:9000");
+        assert_eq!(probed("192.168.1.10:8484"), "192.168.1.10:8484");
+    }
 }

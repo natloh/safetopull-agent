@@ -58,7 +58,7 @@ All settings are environment variables.
 | `STP_SCAN_INTERVAL` | `300` | Seconds between scans (minimum 30) |
 | `STP_UPDATE_MODE` | `advisory` | `advisory` never writes; `apply` allows updates you trigger |
 | `STP_API_TOKEN` | unset | When set, the local API requires `Authorization: Bearer <token>` |
-| `STP_CLOUD_URL` | `https://safetopull.com` | Default account address offered when pairing |
+| `STP_CLOUD_URL` | `https://safetopull.com` | The account service this agent pairs with. It cannot be changed from the dashboard or the API |
 | `STP_REMOTE_ACTIONS` | `false` | Whether updates requested from a linked account are honoured |
 
 Unknown values are rejected at startup rather than guessed.
@@ -93,12 +93,15 @@ recreates the container from its current settings. The image it replaces stays o
 `<tag>-stp-previous`. If the pulled image is not the assessed release, or the new container does
 not start, the previous container is restored and the tag is pointed back at the previous image.
 
-A `red` verdict is never applied. Services pinned to a version tag are not changed; the dashboard
-tells you which tag to set. A container whose image is no longer on the host (the tag was already
+A `red` verdict is never applied. Services pinned to a version tag, to a digest, or to a tag the
+dataset does not list as rolling are not changed; the dashboard tells you what to set. A container whose image is no longer on the host (the tag was already
 moved by a manual pull) is not rebuilt; recreate it yourself and the agent picks up from there.
 
 The labels Docker Compose uses to detect drift are kept consistent, so a later
-`docker compose up -d` leaves an updated container alone.
+`docker compose up -d` leaves an updated container alone. Settings the old image supplied
+(command, healthcheck, exposed ports, declared volumes) are taken from the new image; ones you set
+are kept. Anonymous volumes are re-attached by name so their data carries over, which also means
+`docker compose down -v` no longer removes them for you.
 
 ## Linking to an account (optional)
 
@@ -116,11 +119,19 @@ What is sent is defined by one struct, `Report` in [`src/cloud.rs`](src/cloud.rs
 | `GET` | `/api/status` | Snapshot, configuration summary, link state, outbound request log |
 | `POST` | `/api/refresh` | Scan now |
 | `POST` | `/api/update` | `{"key": "...", "acknowledged": bool}` (apply mode only) |
-| `POST` | `/api/cloud/pair` | `{"code": "...", "name": "...", "cloud_url": "..."}` |
+| `POST` | `/api/cloud/pair` | `{"code": "...", "name": "..."}`; pairs with `STP_CLOUD_URL` |
 | `POST` | `/api/cloud/unlink` | Remove the account link |
 
 `POST` requests must carry an `X-STP-Request` header and are refused when their `Origin` differs
-from the `Host`, so another website cannot trigger them through your browser.
+from the `Host`, so another website cannot trigger them through your browser. Every response
+forbids framing and inline scripts.
+
+### Who can use the dashboard
+
+Without `STP_API_TOKEN`, anyone who can reach port 8484 can read the dashboard, link or unlink the
+agent and, in apply mode, start updates. That suits a trusted home network. Otherwise set
+`STP_API_TOKEN`, or publish the port on localhost only (`127.0.0.1:8484:8484`) and reach it through
+your own reverse proxy or VPN.
 
 ## Building
 
